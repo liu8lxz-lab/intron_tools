@@ -1,0 +1,22 @@
+{
+  "name": "sci-pre-submission-review",
+  "version": "1.0.0",
+  "description": "临床 SCI 稿件投稿前预审质控 Web 系统",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "NODE_ENV=production node src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "dependencies": {
+    "docx": "^9.5.1",
+    "express": "^5.1.0",
+    "mammoth": "^1.10.0",
+    "multer": "^2.0.2",
+    "word-extractor": "^1.0.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

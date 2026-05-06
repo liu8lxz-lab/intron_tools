@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>投稿前预审质控系统</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">审</div>
+          <span>投稿前预审质控系统</span>
+        </div>
+        <nav class="top-actions">
+          <a href="/admin.html">管理后台</a>
+        </nav>
+      </header>
+
+      <main class="container">
+        <div class="workbench">
+          <section class="panel">
+            <div class="panel-header">
+              <h1>提交预审任务</h1>
+              <p>上传单一 Word 文稿，填写客户信息后提交。</p>
+            </div>
+            <div class="panel-body">
+              <form id="taskForm">
+                <div class="form-row">
+                  <label for="fileInput">Word 文稿</label>
+                  <input id="fileInput" name="file" type="file" accept=".doc,.docx" required />
+                  <div class="notice">当前仅支持 doc / docx，暂不支持 PDF。V1 阶段只允许上传一个文件。</div>
+                </div>
+
+                <div class="form-row">
+                  <label for="customerInfo">客户信息</label>
+                  <textarea
+                    id="customerInfo"
+                    name="customerInfo"
+                    placeholder="填写单位、科室、研究方向、目标期刊、文章类型、特殊关注点等。例：XX医院，心内科，副主任医师，目标期刊为某临床SCI，文章类型为回顾性队列研究，重点关注统计方法与合规风险。"
+                  ></textarea>
+                </div>
+
+                <button id="submitButton" type="submit">提交预审任务</button>
+                <div id="formMessage" class="message"></div>
+              </form>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>任务进度</h2>
+              <p id="taskCaption">暂无任务。</p>
+            </div>
+            <div class="panel-body">
+              <div id="emptyState" class="empty">提交文稿后将显示任务状态、摘要和报告下载入口。</div>
+
+              <div id="taskState" class="hidden">
+                <div class="status-band">
+                  <div>
+                    <div id="statusTitle" class="status-title">排队中</div>
+                    <div id="statusMeta" class="status-meta"></div>
+                  </div>
+                  <span id="statusPill" class="pill">排队中</span>
+                </div>
+
+                <div class="timeline" id="timeline"></div>
+
+                <h3>200字以内摘要</h3>
+                <div id="summaryBox" class="summary-box">预审完成后显示。</div>
+
+                <div class="actions" style="margin-top: 18px">
+                  <a id="downloadLink" class="hidden" href="#" download>
+                    <button type="button">下载完整 Word 报告</button>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
