@@ -207,6 +207,30 @@
                 <p>查看状态、错误原因、重试任务、取消未完成任务。</p>
               </div>
               <div class="panel-body">
+                <form id="manualCreateForm">
+                  <h3>创建人工代跑任务</h3>
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label for="manualCreateFile">Word 文稿</label>
+                      <input id="manualCreateFile" name="file" type="file" accept=".doc,.docx" required />
+                      <div class="notice">当前仅支持 doc / docx，暂不支持 PDF。上传后后台会先解析文稿，并生成一段可复制给 Codex 的人工代跑指令。</div>
+                    </div>
+                    <div class="form-row">
+                      <label for="manualCreateCustomerInfo">客户信息</label>
+                      <textarea
+                        id="manualCreateCustomerInfo"
+                        name="customerInfo"
+                        placeholder="填写单位、科室、研究方向、目标期刊、文章类型、特殊关注点等。"
+                      ></textarea>
+                    </div>
+                  </div>
+                  <div class="actions">
+                    <button id="manualCreateSubmit" type="submit">创建人工代跑任务</button>
+                  </div>
+                </form>
+
+                <hr class="section-divider" />
+
                 <div class="actions">
                   <button id="refreshTasksButton" class="secondary" type="button">刷新任务</button>
                 </div>
@@ -234,30 +258,29 @@
                   </div>
                   <div class="panel-body">
                     <div class="notice">
-                      先下载五阶段预审材料，分别提交给 GPT；粘贴 5 个阶段输出后下载终审材料，再粘贴终审 JSON / 输出生成 Word 报告。
+                      复制下面的人工代跑指令交给 Codex；skill 完成后，将包含五阶段输出和 final_adjudication JSON 的完整结果一次性粘贴回来生成 Word 报告。
                     </div>
                     <div class="form-row" style="margin-top: 16px">
                       <label for="manualModel">人工代跑模型标记</label>
                       <input id="manualModel" value="manual-gpt-5.5" />
                     </div>
+                    <div class="form-row">
+                      <label for="manualSkillInstruction">给 Codex 的人工代跑指令</label>
+                      <textarea id="manualSkillInstruction" class="code-area compact-code" readonly></textarea>
+                      <div class="hint">这段指令引用原始 Word 文件路径，不使用后台解析文本，便于 skill 直接读取完整文档。</div>
+                    </div>
                     <div class="actions">
-                      <a id="manualStageDownload" href="#"><button class="secondary" type="button">下载五阶段预审材料</button></a>
-                      <a id="manualFinalDownload" href="#"><button class="secondary" type="button">下载终审材料</button></a>
+                      <button id="copyManualSkillInstruction" class="secondary" type="button">复制人工代跑指令</button>
+                      <a id="manualReportDownload" class="hidden" href="#" download><button type="button">下载 Word 报告</button></a>
                       <button id="closeManualPanel" class="secondary" type="button">收起</button>
                     </div>
 
-                    <h3>五阶段人工输出</h3>
-                    <div id="manualStageOutputs" class="form-grid"></div>
-                    <div class="actions">
-                      <button id="saveManualStages" type="button">保存五阶段输出</button>
-                    </div>
-
-                    <h3>终审 JSON / 输出</h3>
+                    <h3>skills 完整输出</h3>
                     <div class="form-row">
-                      <textarea id="manualFinalOutput" class="code-area" placeholder="粘贴 final_adjudication 返回的 JSON。如果模型误带 Markdown 代码块，系统会尝试自动解析。"></textarea>
+                      <textarea id="manualSkillOutput" class="code-area" placeholder="粘贴 sci-pre-review-runner 的完整输出，需包含 clinical_rationality、statistical_rationality、figure_table_consistency、compliance_risk、minimal_revision 和 final_adjudication JSON。"></textarea>
                     </div>
                     <div class="actions">
-                      <button id="saveManualFinal" type="button">生成 Word 报告</button>
+                      <button id="saveManualSkillOutput" type="button">导入输出并生成 Word 报告</button>
                     </div>
                   </div>
                 </div>

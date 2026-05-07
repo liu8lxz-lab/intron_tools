@@ -14,14 +14,16 @@ const promptContent = document.querySelector("#promptContent");
 const promptVersions = document.querySelector("#promptVersions");
 const promptMessage = document.querySelector("#promptMessage");
 
+const manualCreateForm = document.querySelector("#manualCreateForm");
+const manualCreateSubmit = document.querySelector("#manualCreateSubmit");
 const taskTable = document.querySelector("#taskTable");
 const taskMessage = document.querySelector("#taskMessage");
 const manualPanel = document.querySelector("#manualPanel");
 const manualTaskMeta = document.querySelector("#manualTaskMeta");
-const manualStageDownload = document.querySelector("#manualStageDownload");
-const manualFinalDownload = document.querySelector("#manualFinalDownload");
-const manualStageOutputs = document.querySelector("#manualStageOutputs");
-const manualFinalOutput = document.querySelector("#manualFinalOutput");
+const manualSkillInstruction = document.querySelector("#manualSkillInstruction");
+const copyManualSkillInstruction = document.querySelector("#copyManualSkillInstruction");
+const manualReportDownload = document.querySelector("#manualReportDownload");
+const manualSkillOutput = document.querySelector("#manualSkillOutput");
 const manualModel = document.querySelector("#manualModel");
 
 const reviewStages = [
@@ -51,12 +53,13 @@ function setMessage(node, text, type = "") {
 }
 
 async function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    ...options
+    ...options,
+    headers
   });
   const isJson = response.headers.get("content-type")?.includes("application/json");
   const data = isJson ? await response.json() : await response.text();
@@ -138,23 +141,28 @@ function resetApiForm() {
 function renderManualPanel(task) {
   activeManualTaskId = task.id;
   manualPanel.classList.remove("hidden");
-  manualTaskMeta.textContent = `${task.originalFilename || ""} · ${task.id} · ${task.statusText || task.status}`;
-  manualStageDownload.href = `/api/v1/admin/review-tasks/${task.id}/manual-stage-inputs/download`;
-  manualFinalDownload.href = `/api/v1/admin/review-tasks/${task.id}/manual-final-input/download`;
-  manualFinalOutput.value = task.finalOutput?.output || "";
-
-  const outputMap = Object.fromEntries((task.stageOutputs || []).map((item) => [item.stage, item.output || ""]));
-  manualStageOutputs.innerHTML = reviewStages
-    .map((stage) => {
-      return `
-        <div class="form-row">
-          <label for="manual-${stage.key}">${stage.title}</label>
-          <textarea id="manual-${stage.key}" data-manual-stage="${stage.key}" placeholder="粘贴该阶段 GPT 输出">${escapeHtml(outputMap[stage.key] || "")}</textarea>
-        </div>
-      `;
-    })
-    .join("");
+  const parsedMeta = task.parsedCharCount ? ` · 已解析 ${task.parsedCharCount} 字符` : "";
+  manualTaskMeta.textContent = `${task.originalFilename || ""} · ${task.id} · ${task.statusText || task.status}${parsedMeta}`;
+  manualSkillInstruction.value = task.manualSkillInstruction || "";
+  manualReportDownload.href = `/api/v1/review-tasks/${task.id}/report`;
+  manualReportDownload.classList.toggle("hidden", !task.reportAvailable);
+  manualSkillOutput.value = buildSkillPackageText(task);
   manualPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function buildSkillPackageText(task) {
+  const stageOutputs = task.stageOutputs || [];
+  const finalOutput = task.finalOutput?.output || "";
+  if (!stageOutputs.length && !finalOutput) return "";
+
+  const stageText = reviewStages
+    .map((stage) => {
+      const output = stageOutputs.find((item) => item.stage === stage.key)?.output || "";
+      return `${stage.key}:\n${output}`;
+    })
+    .join("\n\n");
+
+  return `${stageText}\n\nfinal_adjudication JSON:\n${finalOutput}`.trim();
 }
 
 async function openManualPanel(taskId) {
@@ -382,6 +390,39 @@ document.querySelector("#submitPromptButton").addEventListener("click", async ()
   }
 });
 
+manualCreateForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setMessage(taskMessage, "");
+
+  const file = document.querySelector("#manualCreateFile").files[0];
+  if (!file) {
+    setMessage(taskMessage, "请选择 Word 文稿。", "error");
+    return;
+  }
+  if (!/\.(doc|docx)$/i.test(file.name)) {
+    setMessage(taskMessage, "当前仅支持 doc / docx，暂不支持 PDF。", "error");
+    return;
+  }
+
+  manualCreateSubmit.disabled = true;
+  manualCreateSubmit.textContent = "创建中";
+  try {
+    const task = await apiFetch("/api/v1/admin/manual-review-tasks", {
+      method: "POST",
+      body: new FormData(manualCreateForm)
+    });
+    manualCreateForm.reset();
+    renderManualPanel(task);
+    setMessage(taskMessage, "人工代跑任务已创建，已生成可复制的人工代跑指令。", "ok");
+    await loadTasks();
+  } catch (error) {
+    setMessage(taskMessage, error.message, "error");
+  } finally {
+    manualCreateSubmit.disabled = false;
+    manualCreateSubmit.textContent = "创建人工代跑任务";
+  }
+});
+
 async function loadTasks() {
   const tasks = await apiFetch("/api/v1/admin/review-tasks");
   taskTable.innerHTML = tasks
@@ -439,34 +480,42 @@ async function loadTasks() {
 document.querySelector("#refreshTasksButton").addEventListener("click", loadTasks);
 document.querySelector("#closeManualPanel").addEventListener("click", () => manualPanel.classList.add("hidden"));
 
-document.querySelector("#saveManualStages").addEventListener("click", async () => {
-  if (!activeManualTaskId) return;
-  const outputs = {};
-  manualStageOutputs.querySelectorAll("[data-manual-stage]").forEach((textarea) => {
-    outputs[textarea.dataset.manualStage] = textarea.value.trim();
-  });
+copyManualSkillInstruction.addEventListener("click", async () => {
+  const text = manualSkillInstruction.value.trim();
+  if (!text) {
+    setMessage(taskMessage, "当前任务没有可复制的人工代跑指令。", "error");
+    return;
+  }
   try {
-    await apiFetch(`/api/v1/admin/review-tasks/${activeManualTaskId}/manual-stage-outputs`, {
-      method: "POST",
-      body: JSON.stringify({ model: manualModel.value.trim(), outputs })
-    });
-    const task = await apiFetch(`/api/v1/admin/review-tasks/${activeManualTaskId}`);
-    renderManualPanel(task);
-    setMessage(taskMessage, "五阶段人工输出已保存，可以下载终审材料。", "ok");
-    await loadTasks();
-  } catch (error) {
-    setMessage(taskMessage, error.message, "error");
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      manualSkillInstruction.focus();
+      manualSkillInstruction.select();
+      document.execCommand("copy");
+    }
+    setMessage(taskMessage, "人工代跑指令已复制。", "ok");
+  } catch {
+    manualSkillInstruction.focus();
+    manualSkillInstruction.select();
+    setMessage(taskMessage, "浏览器限制了自动复制，请手动复制文本框内容。", "error");
   }
 });
 
-document.querySelector("#saveManualFinal").addEventListener("click", async () => {
+document.querySelector("#saveManualSkillOutput").addEventListener("click", async () => {
   if (!activeManualTaskId) return;
+  const packageText = manualSkillOutput.value.trim();
+  if (!packageText) {
+    setMessage(taskMessage, "请粘贴 skills 完整输出。", "error");
+    return;
+  }
   try {
-    await apiFetch(`/api/v1/admin/review-tasks/${activeManualTaskId}/manual-final-output`, {
+    const task = await apiFetch(`/api/v1/admin/review-tasks/${activeManualTaskId}/manual-skill-output`, {
       method: "POST",
-      body: JSON.stringify({ model: manualModel.value.trim(), output: manualFinalOutput.value.trim() })
+      body: JSON.stringify({ model: manualModel.value.trim(), packageText })
     });
-    setMessage(taskMessage, "人工代跑报告已生成。", "ok");
+    renderManualPanel(task);
+    setMessage(taskMessage, "skills 输出已导入，Word 报告已生成。", "ok");
     await loadTasks();
   } catch (error) {
     setMessage(taskMessage, error.message, "error");

@@ -214,6 +214,12 @@ select:focus {
   font-size: 14px;
 }
 
+.section-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 22px 0;
+}
+
 .status-band {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -403,6 +409,10 @@ tr:last-child td {
   min-height: 360px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
+}
+
+.compact-code {
+  min-height: 96px;
 }
 
 .login-shell {

@@ -30,6 +30,7 @@ const STORAGE_DIR = path.join(ROOT, "storage");
 const UPLOAD_DIR = path.join(STORAGE_DIR, "uploads");
 const REPORT_DIR = path.join(STORAGE_DIR, "reports");
 const STAGE_OUTPUT_DIR = path.join(STORAGE_DIR, "stage-outputs");
+const PARSED_TEXT_DIR = path.join(STORAGE_DIR, "parsed-text");
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const MASTER_KEY_PATH = path.join(DATA_DIR, "master.key");
@@ -169,7 +170,8 @@ async function ensureDirs() {
     fsp.mkdir(DATA_DIR, { recursive: true }),
     fsp.mkdir(UPLOAD_DIR, { recursive: true }),
     fsp.mkdir(REPORT_DIR, { recursive: true }),
-    fsp.mkdir(STAGE_OUTPUT_DIR, { recursive: true })
+    fsp.mkdir(STAGE_OUTPUT_DIR, { recursive: true }),
+    fsp.mkdir(PARSED_TEXT_DIR, { recursive: true })
   ]);
 }
 
@@ -329,7 +331,10 @@ function toAdminTask(task) {
     ...toPublicTask(task),
     manualMode: Boolean(task.manualMode),
     manualReason: task.manualReason || "",
+    manualSkillInstruction: buildManualSkillInstructionText(task),
     stageOutputsCount: task.stageOutputs?.length || 0,
+    parsedCharCount: task.parsedCharCount || 0,
+    parsedTextAvailable: Boolean(task.parsedTextPath),
     finalJson: task.finalJson || null,
     progressLog: task.progressLog || []
   };
@@ -462,6 +467,44 @@ function buildManualFinalInputText(task, manuscriptText) {
   ].join("\n");
 }
 
+function buildManualSkillContextText(task, manuscriptText) {
+  const commandCustomerInfo = String(task.customerInfo || "").replace(/(["\\$`])/g, "\\$1");
+  const commandManuscriptPath = String(task.uploadPath || "").replace(/(["\\$`])/g, "\\$1");
+  const commandProjectRoot = ROOT.replace(/(["\\$`])/g, "\\$1");
+  return [
+    "投稿前预审质控系统 - Skill 人工代跑上下文",
+    "",
+    "使用说明：",
+    "1. 将本文件内容交给 Codex，并明确要求使用 sci-pre-review-runner skill 完成预审。",
+    "2. skill 应输出固定整包格式：五阶段输出 + final_adjudication JSON。",
+    "3. 后台只接收 skill 最终整包输出，不再需要分阶段粘贴。",
+    "4. skill 完成后，将完整输出粘贴回后台“skills 完整输出”文本框。",
+    "5. 当前系统仍仅支持 doc / docx，暂不支持 PDF。",
+    "",
+    "建议命令（如需直接运行上下文构建脚本）：",
+    `node /Users/a682/.codex/skills/sci-pre-review-runner/scripts/build_review_context.mjs --manuscript "${commandManuscriptPath}" --customer-info "${commandCustomerInfo}" --project-root "${commandProjectRoot}"`,
+    "",
+    "【任务信息】",
+    `任务 ID：${task.id}`,
+    `原始文件名：${task.originalFilename}`,
+    `上传文件路径：${task.uploadPath}`,
+    `客户信息：${task.customerInfo || "未填写"}`,
+    `上传时间：${task.createdAt}`,
+    `解析字符数：${task.parsedCharCount || manuscriptText.length}`,
+    "",
+    "【后台解析后的文稿材料】",
+    truncateChars(manuscriptText, MAX_MANUSCRIPT_CHARS)
+  ].join("\n");
+}
+
+function buildManualSkillInstructionText(task) {
+  if (!task?.uploadPath) return "";
+  const manuscriptPath = path.resolve(task.uploadPath);
+  const filename = task.originalFilename || path.basename(manuscriptPath);
+  const customerInfo = task.customerInfo || "未填写";
+  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner skill 进行投稿前预审，并输出可粘贴回后台的完整结果包，格式需包含 clinical_rationality、statistical_rationality、figure_table_consistency、compliance_risk、minimal_revision 和 final_adjudication JSON。`;
+}
+
 function cleanFilename(name) {
   return path.basename(name).replace(/[^\p{L}\p{N}._ -]/gu, "_");
 }
@@ -504,6 +547,28 @@ async function parseManuscript(task) {
   }
 
   throw new Error("当前仅支持 doc / docx，暂不支持 PDF");
+}
+
+async function parseAndStoreManuscript(task) {
+  const manuscriptText = await parseManuscript(task);
+  const parsedTextPath = path.join(PARSED_TEXT_DIR, `${task.id}.txt`);
+  await fsp.writeFile(parsedTextPath, manuscriptText, "utf8");
+  task.parsedTextPath = parsedTextPath;
+  task.parsedCharCount = manuscriptText.length;
+  task.updatedAt = nowIso();
+  return manuscriptText;
+}
+
+async function getTaskManuscriptText(task) {
+  if (task.parsedTextPath) {
+    try {
+      const text = normalizeText(await fsp.readFile(task.parsedTextPath, "utf8"));
+      if (text) return text;
+    } catch {
+      // Fall back to reparsing the original upload.
+    }
+  }
+  return parseAndStoreManuscript(task);
 }
 
 function normalizeText(text) {
@@ -940,6 +1005,51 @@ function parseFinalJson(text) {
   });
 }
 
+function parseStrictFinalJson(text) {
+  const cleaned = stripJsonFence(text);
+  let value;
+  try {
+    value = JSON.parse(cleaned);
+  } catch (error) {
+    throw new Error(`终审 JSON 无法解析：${error.message}`);
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("终审 JSON 顶层必须是对象");
+  }
+
+  const requiredKeys = [
+    "summary",
+    "overall_conclusion",
+    "must_fix",
+    "suggested_fix",
+    "text_and_figure_comments",
+    "compliance_risk",
+    "pre_submission_checklist",
+    "final_review_text"
+  ];
+  const arrayKeys = [
+    "must_fix",
+    "suggested_fix",
+    "text_and_figure_comments",
+    "compliance_risk",
+    "pre_submission_checklist"
+  ];
+
+  for (const key of requiredKeys) {
+    if (!(key in value)) throw new Error(`终审 JSON 缺少字段：${key}`);
+  }
+  for (const key of arrayKeys) {
+    if (!Array.isArray(value[key])) throw new Error(`终审 JSON 字段必须是数组：${key}`);
+  }
+  const summaryLength = Array.from(String(value.summary || "")).length;
+  if (summaryLength > 200) {
+    throw new Error(`终审 JSON summary 必须不超过 200 字，当前为 ${summaryLength} 字`);
+  }
+
+  return normalizeFinalJson(value);
+}
+
 function normalizeFinalJson(value) {
   const result = {
     summary: "",
@@ -962,6 +1072,62 @@ function normalizeFinalJson(value) {
 
   result.summary = result.summary.replace(/\s+/g, " ").slice(0, 200);
   return result;
+}
+
+function parseSkillOutputPackage(packageText) {
+  const text = String(packageText || "").trim();
+  if (!text) throw new Error("请粘贴 skills 完整输出");
+
+  const markerDefs = [
+    ...REVIEW_STAGES.map((stage) => ({
+      type: "stage",
+      key: stage.key,
+      label: `${stage.key}:`,
+      pattern: new RegExp(`^[ \\t]*${escapeRegExp(stage.key)}[ \\t]*:[ \\t]*`, "im")
+    })),
+    {
+      type: "final",
+      key: FINAL_STAGE.key,
+      label: "final_adjudication JSON:",
+      pattern: /^[ \t]*final_adjudication[ \t]+JSON[ \t]*:[ \t]*/im
+    }
+  ];
+
+  const markers = [];
+  let cursor = 0;
+  for (const def of markerDefs) {
+    const slice = text.slice(cursor);
+    const match = def.pattern.exec(slice);
+    if (!match) throw new Error(`缺少 skill 输出段落：${def.label}`);
+    const start = cursor + match.index;
+    const end = start + match[0].length;
+    markers.push({ ...def, start, end });
+    cursor = end;
+  }
+
+  const outputs = {};
+  let finalOutput = "";
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index];
+    const next = markers[index + 1];
+    const content = text.slice(marker.end, next ? next.start : text.length).trim();
+    if (!content) throw new Error(`skill 输出段落内容为空：${marker.label}`);
+    if (marker.type === "stage") {
+      outputs[marker.key] = content;
+    } else {
+      finalOutput = content;
+    }
+  }
+
+  return {
+    outputs,
+    finalOutput,
+    finalJson: parseStrictFinalJson(finalOutput)
+  };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function textRun(text, options = {}) {
@@ -1115,8 +1281,7 @@ async function processTask(taskId) {
     pushProgress(task, "parsing", "开始解析 Word 文稿");
     await saveDb();
 
-    const manuscriptText = await parseManuscript(task);
-    task.parsedCharCount = manuscriptText.length;
+    const manuscriptText = await parseAndStoreManuscript(task);
     ensureNotCancelled(task);
 
     const globalPrompt = getPublishedPrompt(GLOBAL_STAGE.key);
@@ -1293,7 +1458,7 @@ async function bootstrap() {
   await saveDb();
 
   const app = express();
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
   app.use(express.static(PUBLIC_DIR));
 
@@ -1349,6 +1514,53 @@ async function bootstrap() {
     if (task.status !== "succeeded" || !task.reportPath) return jsonError(res, 400, "报告尚未生成");
     setDownloadHeaders(res, "投稿前预审质控报告与修改意见.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     return res.sendFile(path.resolve(task.reportPath));
+  });
+
+  app.post("/api/v1/admin/manual-review-tasks", requireAdmin, upload.single("file"), async (req, res) => {
+    try {
+      validateUploadFile(req.file);
+      const createdAt = nowIso();
+      const task = {
+        id: crypto.randomUUID(),
+        originalFilename: cleanFilename(req.file.originalname),
+        storedFilename: req.file.filename,
+        uploadPath: req.file.path,
+        customerInfo: String(req.body.customerInfo || "").trim(),
+        status: "parsing",
+        summary: "",
+        error: "",
+        manualMode: true,
+        manualReason: "管理员后台上传创建人工代跑任务",
+        stageOutputs: [],
+        progressLog: [
+          {
+            status: "queued",
+            statusText: STATUS_TEXT.queued,
+            message: "人工代跑任务已提交",
+            time: createdAt
+          },
+          {
+            status: "parsing",
+            statusText: STATUS_TEXT.parsing,
+            message: "开始解析 Word 文稿",
+            time: createdAt
+          }
+        ],
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      await parseAndStoreManuscript(task);
+      pushProgress(task, "manual_stage_pending", "已生成可下载的 skill 人工代跑上下文包");
+      db.tasks.unshift(task);
+      await saveDb();
+      res.status(201).json(toAdminTask(task));
+    } catch (error) {
+      if (req.file?.path) {
+        await fsp.rm(req.file.path, { force: true });
+      }
+      jsonError(res, 400, error.message || "人工代跑任务创建失败");
+    }
   });
 
   app.post("/api/v1/admin/login", (req, res) => {
@@ -1594,7 +1806,7 @@ async function bootstrap() {
     if (!["failed", "cancelled", "manual_stage_pending", "manual_final_pending"].includes(task.status)) {
       return jsonError(res, 400, "仅失败、已取消或人工代跑中的任务可转入人工代跑");
     }
-    await parseManuscript(task);
+    await parseAndStoreManuscript(task);
     task.manualMode = true;
     task.manualReason = "管理员手动转入人工代跑模式";
     task.error = "";
@@ -1632,9 +1844,19 @@ async function bootstrap() {
   app.get("/api/v1/admin/review-tasks/:taskId/manual-stage-inputs/download", requireAdmin, async (req, res) => {
     const task = findTask(req.params.taskId);
     if (!task) return jsonError(res, 404, "任务不存在");
-    const manuscriptText = await parseManuscript(task);
+    const manuscriptText = await getTaskManuscriptText(task);
     const content = buildManualStageInputText(task, manuscriptText);
     setDownloadHeaders(res, `${task.id}_人工代跑_五阶段预审材料.txt`, "text/plain; charset=utf-8");
+    res.send(content);
+  });
+
+  app.get("/api/v1/admin/review-tasks/:taskId/manual-skill-context/download", requireAdmin, async (req, res) => {
+    const task = findTask(req.params.taskId);
+    if (!task) return jsonError(res, 404, "任务不存在");
+    const manuscriptText = await getTaskManuscriptText(task);
+    await saveDb();
+    const content = buildManualSkillContextText(task, manuscriptText);
+    setDownloadHeaders(res, `${task.id}_skill人工代跑上下文.txt`, "text/plain; charset=utf-8");
     res.send(content);
   });
 
@@ -1682,7 +1904,7 @@ async function bootstrap() {
   app.get("/api/v1/admin/review-tasks/:taskId/manual-final-input/download", requireAdmin, async (req, res) => {
     const task = findTask(req.params.taskId);
     if (!task) return jsonError(res, 404, "任务不存在");
-    const manuscriptText = await parseManuscript(task);
+    const manuscriptText = await getTaskManuscriptText(task);
     const content = buildManualFinalInputText(task, manuscriptText);
     setDownloadHeaders(res, `${task.id}_人工代跑_终审材料.txt`, "text/plain; charset=utf-8");
     res.send(content);
@@ -1723,6 +1945,70 @@ async function bootstrap() {
 
     task.reportPath = await generateReport(task);
     pushProgress(task, "succeeded", "人工代跑完成，可下载报告");
+    await saveDb();
+    res.json(toAdminTask(task));
+  });
+
+  app.post("/api/v1/admin/review-tasks/:taskId/manual-skill-output", requireAdmin, async (req, res) => {
+    const task = findTask(req.params.taskId);
+    if (!task) return jsonError(res, 404, "任务不存在");
+
+    const packageText = String(req.body?.packageText || "").trim();
+    const model = String(req.body?.model || "manual-skill-runner").trim() || "manual-skill-runner";
+    let parsedPackage;
+    try {
+      parsedPackage = parseSkillOutputPackage(packageText);
+    } catch (error) {
+      return jsonError(res, 400, error.message || "skills 完整输出解析失败");
+    }
+
+    const globalPrompt = getPublishedPrompt(GLOBAL_STAGE.key);
+    task.manualMode = true;
+    task.manualReason = task.manualReason || "管理员导入 skills 人工代跑输出";
+    task.stageOutputs = REVIEW_STAGES.map((stage) => {
+      const prompt = getPublishedPrompt(stage.key);
+      return {
+        stage: stage.key,
+        title: stage.title,
+        model,
+        prompt_id: prompt.id,
+        prompt_version: prompt.version,
+        global_prompt_id: globalPrompt.id,
+        global_prompt_version: globalPrompt.version,
+        tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
+        finishReason: "manual_skill",
+        latencyMs: null,
+        output: parsedPackage.outputs[stage.key],
+        manual: true,
+        createdAt: nowIso()
+      };
+    });
+
+    const finalPrompt = getPublishedPrompt(FINAL_STAGE.key);
+    task.finalOutput = {
+      stage: FINAL_STAGE.key,
+      title: FINAL_STAGE.title,
+      model,
+      prompt_id: finalPrompt.id,
+      prompt_version: finalPrompt.version,
+      global_prompt_id: globalPrompt.id,
+      global_prompt_version: globalPrompt.version,
+      tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
+      finishReason: "manual_skill",
+      latencyMs: null,
+      output: parsedPackage.finalOutput,
+      manual: true,
+      createdAt: nowIso()
+    };
+    task.finalJson = parsedPackage.finalJson;
+    task.summary = task.finalJson.summary;
+    task.error = "";
+    task.reportPath = "";
+    pushProgress(task, "docx_generating", "开始根据 skills 人工代跑输出生成 Word 质控报告");
+    await saveDb();
+
+    task.reportPath = await generateReport(task);
+    pushProgress(task, "succeeded", "skills 人工代跑完成，可下载报告");
     await saveDb();
     res.json(toAdminTask(task));
   });
