@@ -2,9 +2,9 @@ const statusMap = {
   queued: "排队中",
   parsing: "解析材料中",
   stage1_running: "GPT 预审组审稿中",
-  stage2_running: "GPT 裁决者终审中",
+  stage2_running: "终稿输出生成中",
   manual_stage_pending: "待人工预审输出",
-  manual_final_pending: "待人工终审输出",
+  manual_final_pending: "待人工终稿输出",
   docx_generating: "生成质控报告中",
   succeeded: "预审完成",
   failed: "预审失败",
@@ -41,6 +41,7 @@ const statusPill = document.querySelector("#statusPill");
 const timeline = document.querySelector("#timeline");
 const summaryBox = document.querySelector("#summaryBox");
 const downloadLink = document.querySelector("#downloadLink");
+const pdfDownloadLink = document.querySelector("#pdfDownloadLink");
 
 let pollTimer = null;
 let currentTaskId = localStorage.getItem("lastReviewTaskId") || "";
@@ -81,6 +82,13 @@ function renderTask(task) {
     downloadLink.classList.remove("hidden");
   } else {
     downloadLink.classList.add("hidden");
+  }
+
+  if (task.pdfReportAvailable) {
+    pdfDownloadLink.href = `/api/v1/review-tasks/${task.id}/report.pdf`;
+    pdfDownloadLink.classList.remove("hidden");
+  } else {
+    pdfDownloadLink.classList.add("hidden");
   }
 }
 

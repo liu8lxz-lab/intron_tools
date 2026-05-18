@@ -23,15 +23,17 @@ const manualTaskMeta = document.querySelector("#manualTaskMeta");
 const manualSkillInstruction = document.querySelector("#manualSkillInstruction");
 const copyManualSkillInstruction = document.querySelector("#copyManualSkillInstruction");
 const manualReportDownload = document.querySelector("#manualReportDownload");
+const manualPdfReportDownload = document.querySelector("#manualPdfReportDownload");
 const manualSkillOutput = document.querySelector("#manualSkillOutput");
 const manualModel = document.querySelector("#manualModel");
 
 const reviewStages = [
-  { key: "clinical_rationality", title: "临床合理性预审" },
-  { key: "statistical_rationality", title: "统计合理性预审" },
-  { key: "figure_table_consistency", title: "图表一致性预审" },
-  { key: "compliance_risk", title: "合规 / 风险预审" },
-  { key: "minimal_revision", title: "最小修稿预审" }
+  { key: "selection_innovation", title: "选题创新预审" },
+  { key: "clinical_methods", title: "临床方法预审" },
+  { key: "statistical_results", title: "统计结果预审" },
+  { key: "numerical_audit", title: "数值审计预审" },
+  { key: "figure_table_visual_audit", title: "图表与视觉材料审计" },
+  { key: "submission_safety_expression", title: "投稿安全与表达预审" }
 ];
 
 let activeManualTaskId = "";
@@ -144,8 +146,10 @@ function renderManualPanel(task) {
   const parsedMeta = task.parsedCharCount ? ` · 已解析 ${task.parsedCharCount} 字符` : "";
   manualTaskMeta.textContent = `${task.originalFilename || ""} · ${task.id} · ${task.statusText || task.status}${parsedMeta}`;
   manualSkillInstruction.value = task.manualSkillInstruction || "";
-  manualReportDownload.href = `/api/v1/review-tasks/${task.id}/report`;
+  manualReportDownload.href = `/api/v1/admin/review-tasks/${task.id}/report`;
   manualReportDownload.classList.toggle("hidden", !task.reportAvailable);
+  manualPdfReportDownload.href = `/api/v1/admin/review-tasks/${task.id}/report.pdf`;
+  manualPdfReportDownload.classList.toggle("hidden", !task.pdfReportAvailable);
   manualSkillOutput.value = buildSkillPackageText(task);
   manualPanel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -438,6 +442,8 @@ async function loadTasks() {
           <td>
             <div class="actions">
               <a href="/api/v1/admin/review-tasks/${task.id}/stage-outputs/download"><button class="secondary compact" type="button">阶段输出</button></a>
+              ${task.reportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report"><button class="secondary compact" type="button">Word</button></a>` : ""}
+              ${task.pdfReportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report.pdf"><button class="secondary compact" type="button">PDF</button></a>` : ""}
               <button class="secondary compact" data-manual-task="${task.id}" type="button">人工代跑</button>
               <button class="compact" data-retry-task="${task.id}" type="button">重试</button>
               <button class="danger compact" data-cancel-task="${task.id}" type="button">取消</button>

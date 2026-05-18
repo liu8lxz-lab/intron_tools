@@ -162,7 +162,7 @@
             <section id="tab-prompts" class="panel tab-panel hidden">
               <div class="panel-header">
                 <h2>提示词配置</h2>
-                <p>全局系统提示词用于约束全部审查调用；5 个预审阶段与 1 个终审阶段仍按固定调用点维护。</p>
+                <p>当前维护 V2.1 提示词：全局系统提示词、6 个 Agent、通用一致性比较器、裁决者裁定与终稿输出。V1 历史提示词已隐藏但数据保留；裁决者裁定暂为下一步拆分流程准备，当前自动报告仍使用 final_adjudication JSON 作为终稿输出入口。</p>
               </div>
               <div class="panel-body">
                 <div class="split">
@@ -258,7 +258,7 @@
                   </div>
                   <div class="panel-body">
                     <div class="notice">
-                      复制下面的人工代跑指令交给 Codex；skill 完成后，将包含五阶段输出和 final_adjudication JSON 的完整结果一次性粘贴回来生成 Word 报告。
+                      复制下面的人工代跑指令交给 Codex；skill 完成后，将包含 artifact_manifest、六 Agent 双跑结果、一致性比较、合并问题清单、adjudicator_review JSON（裁决者裁定）和 final_adjudication JSON（终稿输出）的完整结果一次性粘贴回来生成报告。
                     </div>
                     <div class="form-row" style="margin-top: 16px">
                       <label for="manualModel">人工代跑模型标记</label>
@@ -272,15 +272,16 @@
                     <div class="actions">
                       <button id="copyManualSkillInstruction" class="secondary" type="button">复制人工代跑指令</button>
                       <a id="manualReportDownload" class="hidden" href="#" download><button type="button">下载 Word 报告</button></a>
+                      <a id="manualPdfReportDownload" class="hidden" href="#" download><button type="button">下载 PDF 报告</button></a>
                       <button id="closeManualPanel" class="secondary" type="button">收起</button>
                     </div>
 
                     <h3>skills 完整输出</h3>
                     <div class="form-row">
-                      <textarea id="manualSkillOutput" class="code-area" placeholder="粘贴 sci-pre-review-runner 的完整输出，需包含 clinical_rationality、statistical_rationality、figure_table_consistency、compliance_risk、minimal_revision 和 final_adjudication JSON。"></textarea>
+                      <textarea id="manualSkillOutput" class="code-area" placeholder="粘贴 sci-pre-review-runner v2.1 的完整输出，需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON（终稿输出）。旧版整包仍兼容。"></textarea>
                     </div>
                     <div class="actions">
-                      <button id="saveManualSkillOutput" type="button">导入输出并生成 Word 报告</button>
+                      <button id="saveManualSkillOutput" type="button">导入输出并生成报告</button>
                     </div>
                   </div>
                 </div>
