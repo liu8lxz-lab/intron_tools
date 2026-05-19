@@ -134,7 +134,7 @@ function resetApiForm() {
   document.querySelector("#apiTemperature").value = "0.2";
   document.querySelector("#apiTemperatureParam").value = "auto";
   document.querySelector("#apiReasoningEffort").value = "high";
-  document.querySelector("#apiMaxTokens").value = "16000";
+  document.querySelector("#apiMaxTokens").value = "";
   document.querySelector("#apiMaxTokensParam").value = "auto";
   document.querySelector("#apiEnabled").value = "false";
   setMessage(apiMessage, "");
@@ -196,7 +196,7 @@ async function loadConfigs() {
           <td>${escapeHtml(config.proxyUrl || "未使用")}</td>
           <td>${escapeHtml(config.model)}</td>
           <td>${escapeHtml(config.apiKeyMasked || "")}</td>
-          <td>timeout ${config.timeout}<br />temperature ${config.temperature}<br />temperature 参数 ${escapeHtml(config.temperatureParam || "auto")}<br />reasoning ${escapeHtml(config.reasoningEffort || "high")}<br />tokens ${config.maxTokens}<br />token 参数 ${escapeHtml(config.maxTokensParam || "auto")}</td>
+          <td>timeout ${config.timeout}<br />temperature ${config.temperature}<br />temperature 参数 ${escapeHtml(config.temperatureParam || "auto")}<br />reasoning ${escapeHtml(config.reasoningEffort || "high")}<br />tokens ${config.maxTokens || "阶段默认"}<br />token 参数 ${escapeHtml(config.maxTokensParam || "auto")}</td>
           <td><span class="pill ${config.enabled ? "succeeded" : ""}">${config.enabled ? "生效" : "未生效"}</span></td>
           <td>
             <div class="actions">
@@ -223,7 +223,7 @@ async function loadConfigs() {
       document.querySelector("#apiTemperature").value = config.temperature;
       document.querySelector("#apiTemperatureParam").value = config.temperatureParam || "auto";
       document.querySelector("#apiReasoningEffort").value = config.reasoningEffort || "high";
-      document.querySelector("#apiMaxTokens").value = config.maxTokens;
+      document.querySelector("#apiMaxTokens").value = config.maxTokens || "";
       document.querySelector("#apiMaxTokensParam").value = config.maxTokensParam || "auto";
       document.querySelector("#apiEnabled").value = String(config.enabled);
       setMessage(apiMessage, "已载入配置。编辑时 API Key 留空表示不修改。");
@@ -269,7 +269,7 @@ apiForm.addEventListener("submit", async (event) => {
     temperature: Number(document.querySelector("#apiTemperature").value),
     temperatureParam: document.querySelector("#apiTemperatureParam").value,
     reasoningEffort: document.querySelector("#apiReasoningEffort").value,
-    maxTokens: Number(document.querySelector("#apiMaxTokens").value),
+    maxTokens: document.querySelector("#apiMaxTokens").value ? Number(document.querySelector("#apiMaxTokens").value) : 0,
     maxTokensParam: document.querySelector("#apiMaxTokensParam").value,
     enabled: document.querySelector("#apiEnabled").value === "true"
   };

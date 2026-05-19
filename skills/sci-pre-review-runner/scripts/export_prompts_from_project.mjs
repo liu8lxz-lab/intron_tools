@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const STAGES = [
   { key: "global_system", title: "全局系统提示词" },
@@ -44,9 +45,15 @@ const projectRoot = path.resolve(requireString(args["project-root"], "--project-
 const dbPath = path.join(projectRoot, ".data", "db.json");
 const skillRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = path.join(skillRoot, "references", "prompts.json");
+const adapterModule = await import(pathToFileURL(path.join(projectRoot, "src", "promptAdapters.js")).href);
+const { buildEffectivePrompt, getPromptAdapterMetadata, PROMPT_ADAPTER_VERSION } = adapterModule;
 
 const db = JSON.parse(await fs.readFile(dbPath, "utf8"));
 const exported = {};
+
+function hashPromptContent(content) {
+  return crypto.createHash("sha256").update(String(content || ""), "utf8").digest("hex");
+}
 
 for (const stage of STAGES) {
   const versions = db.prompts?.[stage.key];
@@ -58,13 +65,25 @@ for (const stage of STAGES) {
     throw new Error(`Expected exactly one published prompt for ${stage.key}, got ${published.length}`);
   }
   const prompt = published[0];
+  const rawContent = String(prompt.content || "");
+  const content = buildEffectivePrompt(stage.key, rawContent);
+  const adapter = getPromptAdapterMetadata(stage.key);
+  const effectiveContentHash = hashPromptContent(content);
   exported[stage.key] = {
     key: stage.key,
     title: prompt.title || stage.title,
     id: prompt.id,
     version: prompt.version,
     status: prompt.status,
-    content: String(prompt.content || "")
+    content,
+    contentHash: effectiveContentHash,
+    rawContentHash: hashPromptContent(rawContent),
+    rawContentLength: rawContent.length,
+    adapterVersion: adapter.version,
+    adapterHash: adapter.contentHash,
+    adapterLength: adapter.contentLength,
+    effectiveContentHash,
+    effectiveContentLength: content.length
   };
   if (!exported[stage.key].content.trim()) {
     throw new Error(`Published prompt is empty: ${stage.key}`);
@@ -74,6 +93,8 @@ for (const stage of STAGES) {
 const snapshot = {
   exportedAt: new Date().toISOString(),
   sourceProjectRoot: projectRoot,
+  schema_version: "prompt_snapshot.v2",
+  adapterVersion: PROMPT_ADAPTER_VERSION,
   stages: STAGES,
   prompts: exported
 };

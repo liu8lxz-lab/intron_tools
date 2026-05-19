@@ -403,8 +403,12 @@ const stageRequests = REVIEW_STAGES.map((stage) => {
     title: prompt.title || stage.title,
     prompt_id: prompt.id,
     prompt_version: prompt.version,
+    prompt_hash: prompt.effectiveContentHash || prompt.contentHash || "",
+    raw_prompt_hash: prompt.rawContentHash || "",
+    adapter_version: prompt.adapterVersion || promptSnapshot.adapterVersion || "",
     global_prompt_id: globalPrompt.id,
     global_prompt_version: globalPrompt.version,
+    global_prompt_hash: globalPrompt.effectiveContentHash || globalPrompt.contentHash || "",
     systemPrompt: buildSystemPrompt(globalPrompt.content, prompt.content),
     userPrompt: buildStageUserInput(task, manuscriptText, artifactManifest, imageReviewChecklist)
   };
@@ -424,8 +428,11 @@ const comparatorRequests = REVIEW_STAGES.map((stage) => ({
   targetTitle: stage.title,
   prompt_id: comparatorPrompt.id,
   prompt_version: comparatorPrompt.version,
+  prompt_hash: comparatorPrompt.effectiveContentHash || comparatorPrompt.contentHash || "",
+  adapter_version: comparatorPrompt.adapterVersion || promptSnapshot.adapterVersion || "",
   global_prompt_id: globalPrompt.id,
   global_prompt_version: globalPrompt.version,
+  global_prompt_hash: globalPrompt.effectiveContentHash || globalPrompt.contentHash || "",
   systemPrompt: buildSystemPrompt(globalPrompt.content, comparatorPrompt.content),
   userPromptTemplate: buildComparatorUserInput(task, stage, artifactManifest, imageReviewChecklist)
 }));
@@ -438,8 +445,11 @@ const adjudicatorRequest = {
   title: adjudicatorPrompt.title,
   prompt_id: adjudicatorPrompt.id,
   prompt_version: adjudicatorPrompt.version,
+  prompt_hash: adjudicatorPrompt.effectiveContentHash || adjudicatorPrompt.contentHash || "",
+  adapter_version: adjudicatorPrompt.adapterVersion || promptSnapshot.adapterVersion || "",
   global_prompt_id: globalPrompt.id,
   global_prompt_version: globalPrompt.version,
+  global_prompt_hash: globalPrompt.effectiveContentHash || globalPrompt.contentHash || "",
   systemPrompt: buildSystemPrompt(globalPrompt.content, adjudicatorPrompt.content),
   userPromptTemplate: buildAdjudicatorUserInput(task, manuscriptText, artifactManifest, imageReviewChecklist, consistencyPlaceholder, mergedPlaceholder)
 };
@@ -448,8 +458,11 @@ const finalRequest = {
   title: finalPrompt.title,
   prompt_id: finalPrompt.id,
   prompt_version: finalPrompt.version,
+  prompt_hash: finalPrompt.effectiveContentHash || finalPrompt.contentHash || "",
+  adapter_version: finalPrompt.adapterVersion || promptSnapshot.adapterVersion || "",
   global_prompt_id: globalPrompt.id,
   global_prompt_version: globalPrompt.version,
+  global_prompt_hash: globalPrompt.effectiveContentHash || globalPrompt.contentHash || "",
   systemPrompt: buildSystemPrompt(globalPrompt.content, finalPrompt.content),
   userPromptTemplate: buildFinalUserInput(task, manuscriptText, artifactManifest, imageReviewChecklist, adjudicatorPlaceholder, consistencyPlaceholder, mergedPlaceholder)
 };
@@ -457,6 +470,7 @@ const finalRequest = {
 const context = {
   generatedAt: new Date().toISOString(),
   sourcePromptSnapshot: promptsPath,
+  promptAdapterVersion: promptSnapshot.adapterVersion || "",
   projectRoot,
   manuscript: {
     path: manuscriptPath,
@@ -487,6 +501,7 @@ if (format === "json") {
     `客户信息：${customerInfo}`,
     `解析字符数：${manuscriptText.length}`,
     `提示词快照：${promptsPath}`,
+    `程序适配层版本：${promptSnapshot.adapterVersion || "-"}`,
     "",
     "## 使用要求",
     "",
@@ -522,7 +537,10 @@ if (format === "json") {
     lines.push(`stage：${request.stage}`);
     lines.push(`prompt_id：${request.prompt_id}`);
     lines.push(`prompt_version：${request.prompt_version}`);
-    lines.push("运行要求：用以下同一请求分别生成 run_1 和 run_2；两次之间保持独立。`issues` 必须尽量结构化。");
+    lines.push(`effective_prompt_hash：${request.prompt_hash || "-"}`);
+    lines.push(`raw_prompt_hash：${request.raw_prompt_hash || "-"}`);
+    lines.push(`adapter_version：${request.adapter_version || "-"}`);
+    lines.push("运行要求：用以下同一请求分别生成 run_1 和 run_2；两次之间保持独立。`issues` 必须结构化，并为每条问题填写 `issue_narrative` 长篇审稿正文。");
     lines.push("");
     lines.push(renderRequestBlock(request.title, request.systemPrompt, request.userPrompt));
     lines.push("");
@@ -539,6 +557,8 @@ if (format === "json") {
     lines.push(`target_stage：${request.targetStage}`);
     lines.push(`comparator_prompt_id：${request.prompt_id}`);
     lines.push(`comparator_prompt_version：${request.prompt_version}`);
+    lines.push(`effective_prompt_hash：${request.prompt_hash || "-"}`);
+    lines.push(`adapter_version：${request.adapter_version || "-"}`);
     lines.push("");
     lines.push(renderRequestBlock(`${request.targetTitle} - ${request.title}`, request.systemPrompt, request.userPromptTemplate));
     lines.push("");
@@ -547,12 +567,20 @@ if (format === "json") {
   lines.push("## 裁决者裁定请求模板");
   lines.push("");
   lines.push("完成六 Agent 合并问题清单后，将模板中的占位内容替换为实际一致性比较和合并问题清单。裁决者只运行一次。");
+  lines.push(`prompt_id：${adjudicatorRequest.prompt_id}`);
+  lines.push(`prompt_version：${adjudicatorRequest.prompt_version}`);
+  lines.push(`effective_prompt_hash：${adjudicatorRequest.prompt_hash || "-"}`);
+  lines.push(`adapter_version：${adjudicatorRequest.adapter_version || "-"}`);
   lines.push("");
   lines.push(renderRequestBlock(adjudicatorRequest.title, adjudicatorRequest.systemPrompt, adjudicatorRequest.userPromptTemplate));
   lines.push("");
   lines.push("## 终稿输出请求模板");
   lines.push("");
   lines.push("完成裁决者裁定后，将模板中的 adjudicator_review 占位内容替换为实际裁决者 JSON。");
+  lines.push(`prompt_id：${finalRequest.prompt_id}`);
+  lines.push(`prompt_version：${finalRequest.prompt_version}`);
+  lines.push(`effective_prompt_hash：${finalRequest.prompt_hash || "-"}`);
+  lines.push(`adapter_version：${finalRequest.adapter_version || "-"}`);
   lines.push("");
   lines.push(renderRequestBlock(finalRequest.title, finalRequest.systemPrompt, finalRequest.userPromptTemplate));
   lines.push("");

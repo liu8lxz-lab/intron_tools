@@ -24,6 +24,8 @@ import {
   TextRun
 } from "docx";
 
+import { buildEffectivePrompt, getPromptAdapterMetadata, PROMPT_ADAPTER_VERSION } from "./promptAdapters.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
@@ -54,6 +56,14 @@ const PYTHON_BIN = process.env.PYTHON_BIN || "python3";
 const REPORT_TITLE = "投稿前预审质控报告与修改意见";
 const DOCX_REPORT_SCHEMA_VERSION = "customer-word-model-score-cn-fields-20260518";
 const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-model-score-20260518";
+const DEFAULT_MODEL_TOKEN_BUDGETS = {
+  agent: 16000,
+  comparator: 12000,
+  adjudicator: 24000,
+  final: 24000,
+  test: 4096,
+  default: 16000
+};
 const CHROME_EXECUTABLE_CANDIDATES = [
   process.env.CHROME_BIN,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -1148,34 +1158,7 @@ function normalizeDb(value) {
     }
   }
 
-  migratePublishedPromptIfNeeded(loaded, ADJUDICATOR_STAGE.key, DEFAULT_PROMPTS[ADJUDICATOR_STAGE.key], "终稿模型评分依据 V2.3");
-  migratePublishedPromptIfNeeded(loaded, FINAL_STAGE.key, DEFAULT_PROMPTS[FINAL_STAGE.key], "模型模糊评分规则");
-
   return loaded;
-}
-
-function migratePublishedPromptIfNeeded(loadedDb, stageKey, content, marker) {
-  const versions = loadedDb.prompts[stageKey];
-  if (!Array.isArray(versions) || versions.length === 0) return;
-  const published = versions.find((item) => item.status === "published") || versions[0];
-  if (String(published.content || "").includes(marker)) return;
-
-  for (const item of versions) {
-    if (item.status === "published") item.status = "archived";
-  }
-  const nextVersion = versions.reduce((max, item) => Math.max(max, item.version || 0), 0) + 1;
-  const now = nowIso();
-  versions.unshift({
-    id: crypto.randomUUID(),
-    stage: stageKey,
-    title: getPromptTitle(stageKey),
-    version: nextVersion,
-    status: "published",
-    content,
-    createdAt: now,
-    publishedAt: now,
-    migrated: true
-  });
 }
 
 async function saveDb() {
@@ -1325,8 +1308,8 @@ function toPublicConfig(config) {
     timeout: config.timeout,
     temperature: config.temperature,
     temperatureParam: config.temperatureParam || "auto",
-    reasoningEffort: config.reasoningEffort || "high",
-    maxTokens: config.maxTokens,
+    reasoningEffort: config.reasoningEffort || (isOpenAiGpt5Model(config) ? "high" : "auto"),
+    maxTokens: Number(config.maxTokens) > 0 ? config.maxTokens : "",
     maxTokensParam: config.maxTokensParam || "auto",
     enabled: config.enabled,
     apiKeyMasked: maskKey(config.apiKeyEnc),
@@ -1361,7 +1344,11 @@ function createPromptSnapshot() {
   const prompts = {};
   for (const stage of PROMPT_STAGES) {
     const prompt = getPublishedPrompt(stage.key);
-    const content = String(prompt.content || "");
+    const rawContent = String(prompt.content || "");
+    const content = buildEffectivePrompt(stage.key, rawContent);
+    const adapter = getPromptAdapterMetadata(stage.key);
+    const rawContentHash = hashPromptContent(rawContent);
+    const effectiveContentHash = hashPromptContent(content);
     prompts[stage.key] = {
       key: stage.key,
       title: prompt.title || stage.title,
@@ -1369,12 +1356,20 @@ function createPromptSnapshot() {
       version: prompt.version,
       status: prompt.status,
       content,
-      contentHash: hashPromptContent(content)
+      contentHash: effectiveContentHash,
+      rawContentHash,
+      rawContentLength: rawContent.length,
+      adapterVersion: adapter.version,
+      adapterHash: adapter.contentHash,
+      adapterLength: adapter.contentLength,
+      effectiveContentHash,
+      effectiveContentLength: content.length
     };
   }
   return {
-    schema_version: "prompt_snapshot.v1",
+    schema_version: "prompt_snapshot.v2",
     createdAt: nowIso(),
+    adapterVersion: PROMPT_ADAPTER_VERSION,
     stages,
     reviewStageOrder: REVIEW_STAGES.map((stage) => stage.key),
     globalStage: GLOBAL_STAGE.key,
@@ -1427,6 +1422,7 @@ function summarizePromptSnapshot(snapshot) {
   return {
     schema_version: snapshot.schema_version,
     createdAt: snapshot.createdAt,
+    adapterVersion: snapshot.adapterVersion || PROMPT_ADAPTER_VERSION,
     prompts: PROMPT_STAGES.map((stage) => {
       const prompt = snapshot.prompts[stage.key];
       return {
@@ -1434,6 +1430,10 @@ function summarizePromptSnapshot(snapshot) {
         title: prompt.title || stage.title,
         id: prompt.id,
         version: prompt.version,
+        rawContentHash: prompt.rawContentHash || null,
+        adapterVersion: prompt.adapterVersion || snapshot.adapterVersion || null,
+        adapterHash: prompt.adapterHash || null,
+        effectiveContentHash: prompt.effectiveContentHash || prompt.contentHash || hashPromptContent(prompt.content),
         contentHash: prompt.contentHash || hashPromptContent(prompt.content)
       };
     })
@@ -1818,7 +1818,7 @@ function normalizeReasoningEffort(value) {
   return ["auto", "none", "minimal", "low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "high";
 }
 
-async function callChatModel(config, systemPrompt, userInput) {
+async function callChatModel(config, systemPrompt, userInput, options = {}) {
   const apiKey = decryptText(config.apiKeyEnc);
   if (!apiKey) throw new Error("当前 API 配置未填写 API Key");
 
@@ -1834,10 +1834,19 @@ async function callChatModel(config, systemPrompt, userInput) {
   if (shouldSendTemperature(config)) {
     requestBody.temperature = Number(config.temperature ?? 0.2);
   }
+  const requestSettings = {
+    callType: options.callType || options.stageKey || "default",
+    stageKey: options.stageKey || "",
+    maxTokensParam: resolveMaxTokensParam(config),
+    maxTokens: resolveMaxTokensValue(config, options),
+    reasoningEffort: effectiveReasoningEffort(config),
+    temperatureSent: shouldSendTemperature(config),
+    temperature: shouldSendTemperature(config) ? Number(config.temperature ?? 0.2) : null
+  };
   if (shouldSendReasoningEffort(config)) {
-    requestBody.reasoning_effort = normalizeReasoningEffort(config.reasoningEffort);
+    requestBody.reasoning_effort = requestSettings.reasoningEffort;
   }
-  requestBody[resolveMaxTokensParam(config)] = Number(config.maxTokens || 4096);
+  requestBody[requestSettings.maxTokensParam] = requestSettings.maxTokens;
   const headers = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`
@@ -1888,14 +1897,15 @@ async function callChatModel(config, systemPrompt, userInput) {
   };
 
   if (!String(output || "").trim()) {
-    throw new Error(buildEmptyModelOutputError(config, usage, finishReason));
+    throw new Error(buildEmptyModelOutputError(config, usage, finishReason, options));
   }
 
   return {
     output: String(output || "").trim(),
     usage,
     finishReason,
-    latencyMs: Date.now() - startedAt
+    latencyMs: Date.now() - startedAt,
+    requestSettings
   };
 }
 
@@ -1913,17 +1923,17 @@ function extractModelOutput(data) {
   return data?.choices?.[0]?.text || data?.output_text || data?.raw || "";
 }
 
-function buildEmptyModelOutputError(config, usage, finishReason) {
+function buildEmptyModelOutputError(config, usage, finishReason, options = {}) {
   const maxParam = resolveMaxTokensParam(config);
-  const maxTokens = Number(config.maxTokens || 4096);
-  const effort = normalizeReasoningEffort(config.reasoningEffort);
+  const maxTokens = resolveMaxTokensValue(config, options);
+  const effort = effectiveReasoningEffort(config);
   const outputTokens = usage?.outputTokens ?? "-";
   const reasoningTokens = usage?.reasoningTokens ?? "-";
   const finish = finishReason ? `finish_reason=${finishReason}，` : "";
   return [
     `模型返回了空的可见输出，${finish}${maxParam}=${maxTokens}，output_tokens=${outputTokens}，reasoning_tokens=${reasoningTokens}。`,
-    "如果使用 GPT-5.5 的 high/xhigh reasoning，最大输出 tokens 会同时消耗隐藏推理 token；当前预算可能被推理过程耗尽。",
-    "请把“最大输出 tokens”提高到至少 16000；xhigh 建议 32000 或更高，或降低 reasoning effort 后重试。"
+    `当前调用使用 reasoning_effort=${effort}。如果使用 GPT-5.5 的 high/xhigh reasoning，最大输出 tokens 会同时消耗隐藏推理 token；当前预算可能被推理过程耗尽。`,
+    "高强度审稿建议：6 个 Agent 至少 16000，比较器至少 12000，裁决者/终稿输出至少 24000；xhigh 建议 32000 或更高，并适当提高 timeout。"
   ].join("");
 }
 
@@ -2074,7 +2084,34 @@ function shouldSendTemperature(config) {
 }
 
 function shouldSendReasoningEffort(config) {
-  return normalizeReasoningEffort(config.reasoningEffort) !== "auto";
+  return effectiveReasoningEffort(config) !== "auto";
+}
+
+function effectiveReasoningEffort(config) {
+  const raw = String(config.reasoningEffort ?? "").trim();
+  if (raw) return normalizeReasoningEffort(raw);
+  if (isOpenAiGpt5Model(config)) return "high";
+  return "auto";
+}
+
+function resolveMaxTokensValue(config, options = {}) {
+  const configured = Number(config.maxTokens);
+  if (Number.isFinite(configured) && configured > 0 && configured !== 4096) {
+    return configured;
+  }
+  const key = options.callType || options.stageKey || "default";
+  if (key === "agent" || REVIEW_STAGES.some((stage) => stage.key === key)) return DEFAULT_MODEL_TOKEN_BUDGETS.agent;
+  if (key === "comparator" || key === COMPARATOR_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.comparator;
+  if (key === "adjudicator" || key === ADJUDICATOR_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.adjudicator;
+  if (key === "final" || key === FINAL_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.final;
+  if (key === "test") return DEFAULT_MODEL_TOKEN_BUDGETS.test;
+  return DEFAULT_MODEL_TOKEN_BUDGETS.default;
+}
+
+function isOpenAiGpt5Model(config) {
+  const model = String(config.model || "").toLowerCase();
+  const baseUrl = String(config.baseUrl || "").toLowerCase();
+  return baseUrl.includes("api.openai.com") && /^gpt-5/.test(model);
 }
 
 function isOpenAiNewReasoningStyleModel(config) {
@@ -2289,6 +2326,14 @@ function normalizeIssue(item, stageKey) {
     confidence: normalizeConfidence(value.confidence),
     source_stage: stageKey
   };
+  const issueNarrative = String(value.issue_narrative || value.issueNarrative || value.narrative || "").trim();
+  const riskAnalysis = String(value.risk_analysis || value.riskAnalysis || "").trim();
+  const revisionPath = normalizeStringArray(value.revision_path || value.revisionPath || value.revision_steps || value.revisionSteps);
+  const evidenceQuotes = normalizeStringArray(value.evidence_quotes || value.evidenceQuotes || value.quotes);
+  if (issueNarrative) normalized.issue_narrative = issueNarrative;
+  if (riskAnalysis) normalized.risk_analysis = riskAnalysis;
+  if (revisionPath.length) normalized.revision_path = revisionPath;
+  if (evidenceQuotes.length) normalized.evidence_quotes = evidenceQuotes;
   const sourceRuns = normalizeSourceRuns(value.source_runs || value.sourceRuns || value.source_run || value.sourceRun);
   const sourceIssueIds = normalizeStringArray(value.source_issue_ids || value.sourceIssueIds || value.source_ids || value.sourceIds);
   if (sourceRuns.length) normalized.source_runs = sourceRuns;
@@ -2454,7 +2499,8 @@ async function runConsistencyComparator(config, promptSnapshot, task, stage, art
     const result = await callChatModel(
       config,
       buildSystemPrompt(globalPrompt.content, comparatorPrompt.content),
-      buildComparatorUserInput(task, stage, artifactManifest, runRecords)
+      buildComparatorUserInput(task, stage, artifactManifest, runRecords),
+      { callType: "comparator", stageKey: COMPARATOR_STAGE.key }
     );
     const parsed = parseComparatorJson(result.output, stage.key);
     return {
@@ -2466,6 +2512,7 @@ async function runConsistencyComparator(config, promptSnapshot, task, stage, art
         comparator_prompt_version: comparatorPrompt.version,
         comparator_prompt_hash: comparatorPrompt.contentHash || hashPromptContent(comparatorPrompt.content),
         tokens: result.usage,
+        requestSettings: result.requestSettings,
         finishReason: result.finishReason,
         latencyMs: result.latencyMs
       },
@@ -2512,6 +2559,18 @@ function mergeIssueRuns(run1Issues, run2Issues, stageKey) {
     if (!existing.evidence.includes(issue.evidence)) existing.evidence = [existing.evidence, issue.evidence].filter(Boolean).join(" / ");
     if (!existing.recommendation.includes(issue.recommendation)) {
       existing.recommendation = [existing.recommendation, issue.recommendation].filter(Boolean).join(" / ");
+    }
+    if (issue.issue_narrative && !String(existing.issue_narrative || "").includes(issue.issue_narrative)) {
+      existing.issue_narrative = [existing.issue_narrative, issue.issue_narrative].filter(Boolean).join("\n\n");
+    }
+    if (issue.risk_analysis && !String(existing.risk_analysis || "").includes(issue.risk_analysis)) {
+      existing.risk_analysis = [existing.risk_analysis, issue.risk_analysis].filter(Boolean).join(" / ");
+    }
+    if (issue.evidence_quotes?.length) {
+      existing.evidence_quotes = Array.from(new Set([...(existing.evidence_quotes || []), ...issue.evidence_quotes]));
+    }
+    if (issue.revision_path?.length) {
+      existing.revision_path = Array.from(new Set([...(existing.revision_path || []), ...issue.revision_path]));
     }
   }
   const agentPrefix = agentPrefixForStage(stageKey);
@@ -2866,6 +2925,24 @@ function formatTokenSummary(tokens) {
   ].join(" / ");
 }
 
+function formatRequestSettings(settings) {
+  if (!settings || typeof settings !== "object") return "-";
+  if (Array.isArray(settings.agentRuns)) {
+    const runSettings = settings.agentRuns
+      .map((item, index) => `run${index + 1}: ${formatRequestSettings(item)}`)
+      .join("；");
+    const comparator = settings.comparator ? `；comparator: ${formatRequestSettings(settings.comparator)}` : "";
+    return `${runSettings || "-"}${comparator}`;
+  }
+  return [
+    `call ${settings.callType || "-"}`,
+    `stage ${settings.stageKey || "-"}`,
+    `${settings.maxTokensParam || "tokens"}=${settings.maxTokens ?? "-"}`,
+    `reasoning=${settings.reasoningEffort || "-"}`,
+    `temperature=${settings.temperatureSent ? settings.temperature : "omit"}`
+  ].join(" / ");
+}
+
 function pushArtifactSummaryLines(lines, manifest, options = {}) {
   if (!manifest) return;
   const counts = manifest.counts || {};
@@ -2906,9 +2983,13 @@ function pushPromptSnapshotSummaryLines(lines, task, options = {}) {
   (options.subsection ? pushSubsection : pushSection)(lines, "任务级提示词快照摘要");
   const summary = summarizePromptSnapshot(task.promptSnapshot);
   lines.push(`锁定时间：${summary.createdAt || "-"}`);
+  lines.push(`适配层版本：${summary.adapterVersion || "-"}`);
   lines.push(`快照文件：${task.promptSnapshotPath || "-"}`);
   for (const prompt of summary.prompts || []) {
-    lines.push(`- ${prompt.key}｜v${prompt.version}｜${prompt.id}｜${prompt.contentHash}`);
+    const rawHash = prompt.rawContentHash ? `raw ${prompt.rawContentHash}` : "raw -";
+    const adapterHash = prompt.adapterHash ? `adapter ${prompt.adapterHash}` : "adapter -";
+    const effectiveHash = prompt.effectiveContentHash || prompt.contentHash || "-";
+    lines.push(`- ${prompt.key}｜v${prompt.version}｜${prompt.id}｜effective ${effectiveHash}｜${rawHash}｜${adapterHash}`);
   }
   lines.push("");
 }
@@ -2928,9 +3009,18 @@ function pushIssueLines(lines, issues, options = {}) {
 
   for (const [index, issue] of normalized.entries()) {
     lines.push(formatIssueTitle(issue, index));
+    if (issue.issue_narrative) {
+      lines.push("   审稿正文：");
+      for (const line of String(issue.issue_narrative).split(/\n+/).map((item) => item.trim()).filter(Boolean)) {
+        lines.push(`   ${line}`);
+      }
+    }
     lines.push(`   位置：${issue.location || "未标明"}`);
+    if (issue.evidence_quotes?.length) lines.push(`   原文片段：${issue.evidence_quotes.join("；")}`);
+    if (issue.risk_analysis) lines.push(`   风险机制：${issue.risk_analysis}`);
     lines.push(`   证据：${issue.evidence || "未提供"}`);
     lines.push(`   建议：${issue.recommendation || "未提供"}`);
+    if (issue.revision_path?.length) lines.push(`   修订路径：${issue.revision_path.join("；")}`);
     lines.push(`   置信度：${issue.confidence ?? "-"}`);
     if (issue.source_runs?.length) lines.push(`   来源轮次：${issue.source_runs.join(", ")}`);
     if (issue.source_issue_ids?.length) lines.push(`   来源编号：${issue.source_issue_ids.join(", ")}`);
@@ -2992,6 +3082,7 @@ function pushStageRunOutputLines(lines, task, options = {}) {
       lines.push(`模型：${item.model || "-"}`);
       lines.push(`问题数：${item.issueCount ?? item.issues?.length ?? "-"}`);
       lines.push(`token：${formatTokenSummary(item.tokens)}`);
+      lines.push(`调用强度：${formatRequestSettings(item.requestSettings)}`);
       lines.push(`finish_reason：${item.finishReason ?? "-"}`);
       const readable = coerceAgentOutputToReadable(item.output, stageKey);
       if (!readable.parsed) lines.push("原始文本：");
@@ -3034,6 +3125,7 @@ function pushConsistencyReportLines(lines, task, options = {}) {
     lines.push(`run1/run2 问题数：${report.run1IssueCount ?? "-"} / ${report.run2IssueCount ?? "-"}`);
     lines.push(`合并问题数：${report.mergedIssueCount ?? "-"}`);
     lines.push(`比较器模式：${report.comparatorMode || report.consistencyLevel || "-"}`);
+    lines.push(`比较器调用强度：${formatRequestSettings(report.requestSettings)}`);
     pushIssueLabelList(lines, "仅第 1 次出现", report.onlyInRun1);
     pushIssueLabelList(lines, "仅第 2 次出现", report.onlyInRun2);
     pushIssueLabelList(lines, "两次均出现", report.overlapIssues);
@@ -3054,6 +3146,7 @@ function pushMergedStageOutputLines(lines, task, options = {}) {
     lines.push(`模型：${item.model || "-"}`);
     lines.push(`问题数：${item.issueCount ?? item.issues?.length ?? "-"}`);
     lines.push(`token：${formatTokenSummary(item.tokens)}`);
+    lines.push(`调用强度：${formatRequestSettings(item.requestSettings)}`);
     lines.push(`finish_reason：${item.finishReason ?? "-"}`);
     lines.push(`latency：${item.latencyMs ?? "-"} ms`);
     lines.push(`overall_overlap：${item.consistency?.overallOverlapRate ?? "-"}`);
@@ -3119,9 +3212,18 @@ function pushPdfIssueReadableLines(lines, title, issues, options = {}) {
     const issue = normalizePdfIssue(item, options.stageKey, options.fallbackSeverity);
     lines.push(`${index + 1}. [${issue.severity}] ${issue.id ? `${issue.id}｜` : ""}${issue.issue || "未命名问题"}`);
     lines.push(`   归属维度：${issue.dimensionTitle}（${issue.category || "-"}）`);
+    if (issue.issue_narrative) {
+      lines.push("   审稿正文：");
+      for (const line of String(issue.issue_narrative).split(/\n+/).map((value) => value.trim()).filter(Boolean)) {
+        lines.push(`   ${line}`);
+      }
+    }
     lines.push(`   位置：${issue.location || "未标明"}`);
+    if (issue.evidence_quotes?.length) lines.push(`   原文片段：${issue.evidence_quotes.join("；")}`);
+    if (issue.risk_analysis) lines.push(`   风险机制：${issue.risk_analysis}`);
     lines.push(`   依据/说明：${issue.evidence || "未提供"}`);
     lines.push(`   建议：${issue.recommendation || "未提供"}`);
+    if (issue.revision_path?.length) lines.push(`   修订路径：${issue.revision_path.join("；")}`);
     lines.push(`   置信度：${issue.confidence ?? "-"}`);
     if (issue.source_agents?.length) lines.push(`   来源 Agent：${issue.source_agents.join(", ")}`);
     if (issue.source_runs?.length) lines.push(`   来源轮次：${issue.source_runs.join(", ")}`);
@@ -3192,6 +3294,7 @@ function pushAdjudicatorOutputLines(lines, task) {
     lines.push(`prompt_version：${meta.prompt_version || "-"}`);
     lines.push(`global_prompt_id：${meta.global_prompt_id || "-"}`);
     lines.push(`token：${formatTokenSummary(meta.tokens)}`);
+    lines.push(`调用强度：${formatRequestSettings(meta.requestSettings)}`);
     lines.push(`finish_reason：${meta.finishReason ?? "-"}`);
     lines.push(`latency：${meta.latencyMs ?? "-"} ms`);
     lines.push("");
@@ -3247,6 +3350,7 @@ function pushFinalOutputLines(lines, task) {
     lines.push(`prompt_version：${meta.prompt_version || "-"}`);
     lines.push(`global_prompt_id：${meta.global_prompt_id || "-"}`);
     lines.push(`token：${formatTokenSummary(meta.tokens)}`);
+    lines.push(`调用强度：${formatRequestSettings(meta.requestSettings)}`);
     lines.push(`finish_reason：${meta.finishReason ?? "-"}`);
     lines.push(`latency：${meta.latencyMs ?? "-"} ms`);
     lines.push("");
@@ -3395,6 +3499,10 @@ function normalizePdfIssue(item, fallbackCategory = "general", fallbackSeverity 
     location: String(value.location || value.position || "未标明").trim(),
     evidence: String(value.evidence || value.explanation || value.detail || value.reason || "需人工复核").trim(),
     recommendation: String(value.recommendation || value.suggestion || value.fix || "建议按终稿输出意见进行低成本修订").trim(),
+    issue_narrative: String(value.issue_narrative || value.issueNarrative || value.narrative || "").trim(),
+    risk_analysis: String(value.risk_analysis || value.riskAnalysis || "").trim(),
+    evidence_quotes: normalizeStringArray(value.evidence_quotes || value.evidenceQuotes || value.quotes),
+    revision_path: normalizeStringArray(value.revision_path || value.revisionPath || value.revision_steps || value.revisionSteps),
     confidence: normalizeConfidence(value.confidence),
     source_agents: normalizeStringArray(value.source_agents || value.sourceAgents || value.source_agent || value.sourceAgent),
     source_issue_ids: normalizeStringArray(value.source_issue_ids || value.sourceIssueIds || value.source_ids || value.sourceIds),
@@ -4247,7 +4355,8 @@ async function processTask(taskId) {
         const result = await callChatModel(
           config,
           buildSystemPrompt(globalPrompt.content, prompt.content),
-          `${buildStageUserInput(task, manuscriptText, artifactManifest)}\n\n【本次运行】\n这是 ${stage.title} 的第 ${runIndex} 次独立审稿。请不要引用另一轮结果。`
+          `${buildStageUserInput(task, manuscriptText, artifactManifest)}\n\n【本次运行】\n这是 ${stage.title} 的第 ${runIndex} 次独立审稿。请不要引用另一轮结果。`,
+          { callType: "agent", stageKey: stage.key }
         );
         const issues = parseStageIssues(result.output, stage.key);
         const runRecord = {
@@ -4262,6 +4371,7 @@ async function processTask(taskId) {
           global_prompt_version: globalPrompt.version,
           global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
           tokens: result.usage,
+          requestSettings: result.requestSettings,
           finishReason: result.finishReason,
           latencyMs: result.latencyMs,
           output: result.output,
@@ -4300,6 +4410,10 @@ async function processTask(taskId) {
           totalTokens: runRecords.reduce((sum, item) => sum + (item.tokens?.totalTokens || 0), 0) || null,
           reasoningTokens: runRecords.reduce((sum, item) => sum + (item.tokens?.reasoningTokens || 0), 0) || null
         },
+        requestSettings: {
+          agentRuns: runRecords.map((item) => item.requestSettings).filter(Boolean),
+          comparator: consistency.requestSettings || null
+        },
         finishReason: "merged_double_run",
         latencyMs: runRecords.reduce((sum, item) => sum + (item.latencyMs || 0), 0) || null,
         output: buildMergedStageOutput(stage, mergedIssues, consistency),
@@ -4317,7 +4431,12 @@ async function processTask(taskId) {
     await saveDb();
 
     const finalPrompt = getSnapshotPrompt(promptSnapshot, FINAL_STAGE.key);
-    const finalResult = await callChatModel(config, buildSystemPrompt(globalPrompt.content, finalPrompt.content), buildFinalUserInput(task, manuscriptText, task.stageOutputs, artifactManifest));
+    const finalResult = await callChatModel(
+      config,
+      buildSystemPrompt(globalPrompt.content, finalPrompt.content),
+      buildFinalUserInput(task, manuscriptText, task.stageOutputs, artifactManifest),
+      { callType: "final", stageKey: FINAL_STAGE.key }
+    );
     task.finalOutput = {
       stage: FINAL_STAGE.key,
       title: FINAL_STAGE.title,
@@ -4329,6 +4448,7 @@ async function processTask(taskId) {
       global_prompt_version: globalPrompt.version,
       global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
       tokens: finalResult.usage,
+      requestSettings: finalResult.requestSettings,
       finishReason: finalResult.finishReason,
       latencyMs: finalResult.latencyMs,
       output: finalResult.output,
@@ -4618,8 +4738,8 @@ async function bootstrap() {
       timeout: Number(body.timeout || 120000),
       temperature: Number(body.temperature ?? 0.2),
       temperatureParam: normalizeTemperatureParam(body.temperatureParam),
-      reasoningEffort: normalizeReasoningEffort(body.reasoningEffort),
-      maxTokens: Number(body.maxTokens || 4096),
+      reasoningEffort: body.reasoningEffort === undefined || body.reasoningEffort === "" ? "" : normalizeReasoningEffort(body.reasoningEffort),
+      maxTokens: Number(body.maxTokens || 0),
       maxTokensParam: normalizeMaxTokensParam(body.maxTokensParam),
       enabled,
       createdAt: now,
@@ -4642,8 +4762,8 @@ async function bootstrap() {
     if (body.timeout !== undefined) config.timeout = Number(body.timeout);
     if (body.temperature !== undefined) config.temperature = Number(body.temperature);
     if (body.temperatureParam !== undefined) config.temperatureParam = normalizeTemperatureParam(body.temperatureParam);
-    if (body.reasoningEffort !== undefined) config.reasoningEffort = normalizeReasoningEffort(body.reasoningEffort);
-    if (body.maxTokens !== undefined) config.maxTokens = Number(body.maxTokens);
+    if (body.reasoningEffort !== undefined) config.reasoningEffort = body.reasoningEffort === "" ? "" : normalizeReasoningEffort(body.reasoningEffort);
+    if (body.maxTokens !== undefined) config.maxTokens = Number(body.maxTokens || 0);
     if (body.maxTokensParam !== undefined) config.maxTokensParam = normalizeMaxTokensParam(body.maxTokensParam);
     if (body.enabled !== undefined) {
       if (body.enabled) db.apiConfigs.forEach((item) => (item.enabled = false));
@@ -4668,7 +4788,7 @@ async function bootstrap() {
     const config = db.apiConfigs.find((item) => item.id === req.params.configId);
     if (!config) return jsonError(res, 404, "API 配置不存在");
     try {
-      const result = await callChatModel(config, "你是连接测试助手。", "请只回复：连接成功");
+      const result = await callChatModel(config, "你是连接测试助手。", "请只回复：连接成功", { callType: "test" });
       res.json({ ok: true, latencyMs: result.latencyMs, output: result.output });
     } catch (error) {
       jsonError(res, 400, error.message || "连接测试失败");

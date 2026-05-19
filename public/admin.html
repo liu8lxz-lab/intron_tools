@@ -112,8 +112,8 @@
                     </div>
                     <div class="form-row">
                       <label for="apiMaxTokens">最大输出 tokens</label>
-                      <input id="apiMaxTokens" type="number" value="16000" min="256" />
-                      <div class="hint">GPT-5.5 的该值包含隐藏 reasoning tokens。high 建议至少 16000，xhigh 建议 32000 或更高。</div>
+                      <input id="apiMaxTokens" type="number" min="0" placeholder="留空使用阶段默认" />
+                      <div class="hint">留空时系统按调用点自动设置：Agent 16000、比较器 12000、裁决者/终稿 24000。GPT-5.5 的该值包含隐藏 reasoning tokens。</div>
                     </div>
                     <div class="form-row">
                       <label for="apiMaxTokensParam">Token 参数名</label>
@@ -162,7 +162,7 @@
             <section id="tab-prompts" class="panel tab-panel hidden">
               <div class="panel-header">
                 <h2>提示词配置</h2>
-                <p>当前维护 V2.1 提示词：全局系统提示词、6 个 Agent、通用一致性比较器、裁决者裁定与终稿输出。V1 历史提示词已隐藏但数据保留；裁决者裁定暂为下一步拆分流程准备，当前自动报告仍使用 final_adjudication JSON 作为终稿输出入口。</p>
+                <p>当前只维护你的自然语言提示词原文：全局系统提示词、6 个 Agent、通用一致性比较器、裁决者裁定与终稿输出。程序会在运行时自动追加 JSON 与报告生成适配层；适配层不写入这里的文本框。V1 历史提示词已隐藏但数据保留。</p>
               </div>
               <div class="panel-body">
                 <div class="split">

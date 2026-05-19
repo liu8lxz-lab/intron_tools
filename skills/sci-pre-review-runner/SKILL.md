@@ -44,6 +44,7 @@ This skill does not call the web app API, does not read API configs, and does no
    - Do not reference the first run while producing the second run.
    - Do not pass one Agent's output into another Agent.
    - Each run should return the Agent JSON requested by its prompt, especially the `issues` array.
+   - Each issue should include `issue_narrative`: a complete natural-language review paragraph with issue number/title, severity, evidence, submission risk, and low-cost revision path. P0/P1 narratives should be detailed enough to resemble a human reviewer comment rather than a short label.
 5. For each Agent, compare the two runs:
    - Use the `consistency_comparator` prompt from the generated context.
    - Report overall issue overlap and P0/P1 overlap.
@@ -144,6 +145,10 @@ agent_merged_issue_lists:
       "evidence": "证据",
       "location": "位置",
       "recommendation": "建议",
+      "issue_narrative": "问题编号、短标题、风险等级、依据、问题及投稿风险、低成本处理方向组成的完整审稿正文",
+      "risk_analysis": "可选：风险机制说明",
+      "evidence_quotes": ["可选：原文片段"],
+      "revision_path": ["可选：修订步骤"],
       "confidence": 0.8,
       "source_runs": ["run_1", "run_2"],
       "source_issue_ids": ["run_1:A1-01", "run_2:A1-03"]
@@ -199,9 +204,11 @@ final_adjudication JSON:
 The `summary` field must be no longer than 200 Chinese characters. Array fields must be JSON arrays. Array items may be strings or objects.
 The optional `report_content` object should carry adjudicator-derived structured data for PDF/report visualization where available. When `adjudicator_review JSON` or a complete issue pool is available, it must include the model-generated `score_summary`; the app reads these scores directly for Word/PDF and does not compute customer-facing scores by mechanical deduction.
 
+For debugging quality, do not omit `issue_narrative` from Agent, comparator, or adjudicator issue objects. The admin stage-output TXT uses this field first, then falls back to `evidence` / `recommendation`.
+
 ## Prompt Snapshot
 
-Load `references/prompts.json` only when prompt details are needed. It contains the current published prompt snapshot from the app database and no API keys, uploaded files, tasks, reports, or encrypted configuration.
+Load `references/prompts.json` only when prompt details are needed. It contains the current effective prompt snapshot from the app database and no API keys, uploaded files, tasks, reports, or encrypted configuration. The `content` field is the backend prompt text plus the runtime adapter layer; `rawContentHash`, `adapterVersion`, and `effectiveContentHash` are included for debugging.
 
 When the app's backend prompts change, refresh the snapshot:
 

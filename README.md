@@ -46,6 +46,7 @@ npm run dev
 - 未配置并启用 API 时，网页系统可以正常启动和登录后台；系统没有内置默认模型，实际自动审稿模型来自后台当前生效 API 配置中的“模型名”字段。
 - 当前已升级到 V2.1 审稿流程：上传后先运行 Python 文件状态检测，统计图片、表格、drawing、chart、caption 和潜在图像质量风险；随后执行 6 个 Agent 双跑、Agent 内一致性比较和合并问题清单，终稿输出阶段读取 6 份合并清单生成报告 JSON。
 - 当前已支持 V2.1 人工代跑模式：后台可直接上传 Word 文稿并生成可复制给 Codex 的人工代跑指令；`skills/sci-pre-review-runner` 内置 V2.1 skill 源文件与上下文构建脚本。输出 `artifact_manifest`、`agent_runs`、`agent_consistency_reports`、`agent_merged_issue_lists`、`adjudicator_review JSON`（裁决者裁定）和 `final_adjudication JSON`（终稿输出）后，可在后台一次性粘贴整包并生成 Word/PDF 报告。旧版整包和旧版分阶段粘贴接口仍保留兼容。
+- V2.3 起，后台提示词页面只保存你维护的自然语言提示词原文；系统在运行时自动追加程序适配层，用于约束 JSON schema、`issue_narrative`、比较器、裁决者和终稿输出格式。阶段输出 TXT 会优先展示长篇审稿正文，便于排查每个 Agent 的真实意见质量。
 - 后台同一时间只允许一个 API 配置生效。
 - API Key 由后端使用本机 `.data/master.key` 进行 AES-256-GCM 加密保存。
 - API 配置支持可选“代理地址”，用于后端访问模型接口。常见本机代理填写 `http://127.0.0.1:7890` 这类 HTTP 代理地址；当前不支持 `socks5://`。
@@ -53,6 +54,7 @@ npm run dev
 - API 配置支持 temperature 参数发送策略。OpenAI `gpt-5*` / `o*` 模型在“自动”模式下不发送 `temperature`，避免新模型只接受默认值时报错。
 - API 配置支持 `reasoning_effort`。GPT-5.5 可选 `none` / `low` / `medium` / `high` / `xhigh`，默认使用 `high`。
 - GPT-5.5 的 `max_completion_tokens` 会同时消耗隐藏 reasoning tokens；如果模型返回空可见输出，系统会将任务标记失败并提示提高“最大输出 tokens”。`high` 建议至少 16000，`xhigh` 建议 32000 或更高。
+- 如果后台 API 配置未填写最大输出 tokens，系统会按调用点使用高强度默认值：6 个 Agent 为 16000，比较器为 12000，裁决者和终稿输出为 24000。管理员显式填写后以配置值为准。
 - 提示词包含 1 个全局系统提示词、6 个独立 Agent 阶段提示词、1 个通用一致性比较器提示词、1 个裁决者裁定提示词和 1 个终稿输出提示词。全局系统提示词不会形成额外模型调用，而是与每个阶段提示词合并为该次调用的 system prompt。人工代跑已按“裁决者裁定 → 终稿输出”拆分；现有自动报告仍由 `final_adjudication` 作为终稿输出入口生成。
 - 6 个 Agent 阶段按固定提示词串行执行，每个 Agent 独立运行两次，不共享 conversation/thread，也不会互相传递输出；同一 Agent 双跑结束后调用通用一致性比较器生成重合度、差异项和合并问题清单；终稿输出阶段才接收 6 份合并问题清单和一致性摘要。
-- 每个任务开始时会锁定一份 `prompt_snapshot`，包含全局提示词、6 个 Agent 提示词、通用一致性比较器提示词、裁决者裁定提示词和终稿输出提示词的版本、内容与 hash；同一任务的自动审稿、人工代跑材料、终稿输出和阶段输出导出都使用该快照。管理员后续修改提示词只影响新任务；重试任务会重新锁定最新提示词。
+- 每个任务开始时会锁定一份 `prompt_snapshot`，其中 `content` 是“自然语言提示词原文 + 程序适配层”的有效提示词，同时记录 `rawContentHash`、`adapterVersion` 和 `effectiveContentHash`；同一任务的自动审稿、人工代跑材料、终稿输出和阶段输出导出都使用该快照。管理员后续修改提示词只影响新任务；重试任务会重新锁定最新提示词。
