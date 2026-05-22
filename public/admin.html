@@ -258,7 +258,7 @@
                   </div>
                   <div class="panel-body">
                     <div class="notice">
-                      复制下面的人工代跑指令交给 Codex；skill 完成后，将包含 artifact_manifest、六 Agent 双跑结果、一致性比较、合并问题清单、adjudicator_review JSON（裁决者裁定）和 final_adjudication JSON（终稿输出）的完整结果一次性粘贴回来生成报告。
+                      可选择普通 Codex skill 代跑，或使用网页端 5.5 thinking 半自动代跑。两种方式最终都需要粘贴完整结果包，后台再生成 Word/PDF 报告。网页端代跑在上传原始 Word 或发送医学文稿内容前需要你确认。
                     </div>
                     <div class="form-row" style="margin-top: 16px">
                       <label for="manualModel">人工代跑模型标记</label>
@@ -269,8 +269,14 @@
                       <textarea id="manualSkillInstruction" class="code-area compact-code" readonly></textarea>
                       <div class="hint">这段指令引用原始 Word 文件路径，不使用后台解析文本，便于 skill 直接读取完整文档。</div>
                     </div>
+                    <div class="form-row">
+                      <label for="webRunnerInstruction">给网页端 5.5 thinking 半自动代跑的指令</label>
+                      <textarea id="webRunnerInstruction" class="code-area compact-code" readonly></textarea>
+                      <div class="hint">这段指令用于 Browser 自动化网页端模型；上传 Word 和发送文稿前必须由你确认。</div>
+                    </div>
                     <div class="actions">
                       <button id="copyManualSkillInstruction" class="secondary" type="button">复制人工代跑指令</button>
+                      <button id="copyWebRunnerInstruction" class="secondary" type="button">复制网页端代跑指令</button>
                       <a id="manualReportDownload" class="hidden" href="#" download><button type="button">下载 Word 报告</button></a>
                       <a id="manualPdfReportDownload" class="hidden" href="#" download><button type="button">下载 PDF 报告</button></a>
                       <button id="closeManualPanel" class="secondary" type="button">收起</button>

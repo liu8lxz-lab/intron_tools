@@ -21,7 +21,9 @@ const taskMessage = document.querySelector("#taskMessage");
 const manualPanel = document.querySelector("#manualPanel");
 const manualTaskMeta = document.querySelector("#manualTaskMeta");
 const manualSkillInstruction = document.querySelector("#manualSkillInstruction");
+const webRunnerInstruction = document.querySelector("#webRunnerInstruction");
 const copyManualSkillInstruction = document.querySelector("#copyManualSkillInstruction");
+const copyWebRunnerInstruction = document.querySelector("#copyWebRunnerInstruction");
 const manualReportDownload = document.querySelector("#manualReportDownload");
 const manualPdfReportDownload = document.querySelector("#manualPdfReportDownload");
 const manualSkillOutput = document.querySelector("#manualSkillOutput");
@@ -146,6 +148,7 @@ function renderManualPanel(task) {
   const parsedMeta = task.parsedCharCount ? ` · 已解析 ${task.parsedCharCount} 字符` : "";
   manualTaskMeta.textContent = `${task.originalFilename || ""} · ${task.id} · ${task.statusText || task.status}${parsedMeta}`;
   manualSkillInstruction.value = task.manualSkillInstruction || "";
+  webRunnerInstruction.value = task.webRunnerInstruction || "";
   manualReportDownload.href = `/api/v1/admin/review-tasks/${task.id}/report`;
   manualReportDownload.classList.toggle("hidden", !task.reportAvailable);
   manualPdfReportDownload.href = `/api/v1/admin/review-tasks/${task.id}/report.pdf`;
@@ -504,6 +507,28 @@ copyManualSkillInstruction.addEventListener("click", async () => {
   } catch {
     manualSkillInstruction.focus();
     manualSkillInstruction.select();
+    setMessage(taskMessage, "浏览器限制了自动复制，请手动复制文本框内容。", "error");
+  }
+});
+
+copyWebRunnerInstruction.addEventListener("click", async () => {
+  const text = webRunnerInstruction.value.trim();
+  if (!text) {
+    setMessage(taskMessage, "当前任务没有可复制的网页端代跑指令。", "error");
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      webRunnerInstruction.focus();
+      webRunnerInstruction.select();
+      document.execCommand("copy");
+    }
+    setMessage(taskMessage, "网页端代跑指令已复制。", "ok");
+  } catch {
+    webRunnerInstruction.focus();
+    webRunnerInstruction.select();
     setMessage(taskMessage, "浏览器限制了自动复制，请手动复制文本框内容。", "error");
   }
 });

@@ -46,6 +46,7 @@ npm run dev
 - 未配置并启用 API 时，网页系统可以正常启动和登录后台；系统没有内置默认模型，实际自动审稿模型来自后台当前生效 API 配置中的“模型名”字段。
 - 当前已升级到 V2.1 审稿流程：上传后先运行 Python 文件状态检测，统计图片、表格、drawing、chart、caption 和潜在图像质量风险；随后执行 6 个 Agent 双跑、Agent 内一致性比较和合并问题清单，终稿输出阶段读取 6 份合并清单生成报告 JSON。
 - 当前已支持 V2.1 人工代跑模式：后台可直接上传 Word 文稿并生成可复制给 Codex 的人工代跑指令；`skills/sci-pre-review-runner` 内置 V2.1 skill 源文件与上下文构建脚本。输出 `artifact_manifest`、`agent_runs`、`agent_consistency_reports`、`agent_merged_issue_lists`、`adjudicator_review JSON`（裁决者裁定）和 `final_adjudication JSON`（终稿输出）后，可在后台一次性粘贴整包并生成 Word/PDF 报告。旧版整包和旧版分阶段粘贴接口仍保留兼容。
+- 当前也支持网页端 5.5 thinking 半自动代跑：后台会生成 `web-review-runner` 指令，Codex Browser 在用户已登录并确认上传的网页端模型中运行同一套 V2.1 流程，最终仍粘贴完整整包回后台生成报告。
 - V2.3 起，后台提示词页面只保存你维护的自然语言提示词原文；系统在运行时自动追加程序适配层，用于约束 JSON schema、`issue_narrative`、比较器、裁决者和终稿输出格式。阶段输出 TXT 会优先展示长篇审稿正文，便于排查每个 Agent 的真实意见质量。
 - 后台同一时间只允许一个 API 配置生效。
 - API Key 由后端使用本机 `.data/master.key` 进行 AES-256-GCM 加密保存。

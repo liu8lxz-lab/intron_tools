@@ -1285,6 +1285,7 @@ function toAdminTask(task) {
     manualMode: Boolean(task.manualMode),
     manualReason: task.manualReason || "",
     manualSkillInstruction: buildManualSkillInstructionText(task),
+    webRunnerInstruction: buildWebReviewRunnerInstructionText(task),
     stageOutputsCount: task.stageOutputs?.length || 0,
     stageRunOutputsCount: task.stageRunOutputs?.length || 0,
     promptSnapshot: summarizePromptSnapshot(task.promptSnapshot),
@@ -1293,6 +1294,7 @@ function toAdminTask(task) {
     parsedCharCount: task.parsedCharCount || 0,
     parsedTextAvailable: Boolean(task.parsedTextPath),
     artifactManifest: task.artifactManifest || null,
+    runnerMetadata: task.runnerMetadata || null,
     finalJson: task.finalJson || null,
     progressLog: task.progressLog || []
   };
@@ -1580,6 +1582,35 @@ function buildManualSkillInstructionText(task) {
   const projectSkillScript = path.join(ROOT, "skills", "sci-pre-review-runner", "scripts", "build_review_context.mjs");
   const promptSnapshotText = task.promptSnapshotPath ? `本任务提示词快照路径为：${task.promptSnapshotPath}；运行脚本时请加入 --prompts "${task.promptSnapshotPath}"，不要改用后台后续新版本提示词。` : "如后台已生成本任务提示词快照，请优先使用该快照，不要改用后台后续新版本提示词。";
   return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner v2.1 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 6 个 Agent 双跑、每个 Agent 一致性比较、6 份 Agent 合并问题清单；随后运行 adjudicator_review JSON 进行裁决者裁定；最后运行 final_adjudication JSON（业务含义为终稿输出），且终稿输出必须基于裁决者裁定结果生成。请输出可粘贴回后台的完整 v2.1 三阶段结果包，格式需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON。`;
+}
+
+function buildWebReviewRunnerInstructionText(task) {
+  if (!task?.uploadPath) return "";
+  const manuscriptPath = path.resolve(task.uploadPath);
+  const filename = task.originalFilename || path.basename(manuscriptPath);
+  const customerInfo = task.customerInfo || "未填写";
+  const projectWebSkillPath = path.join(ROOT, "skills", "web-review-runner", "SKILL.md");
+  const projectContextScript = path.join(ROOT, "skills", "sci-pre-review-runner", "scripts", "build_review_context.mjs");
+  const promptSnapshotText = task.promptSnapshotPath ? `本任务提示词快照路径为：${task.promptSnapshotPath}；构建上下文时请加入 --prompts "${task.promptSnapshotPath}"，不要改用后台后续新版本提示词。` : "如后台已生成本任务提示词快照，请优先使用该快照，不要改用后台后续新版本提示词。";
+  return [
+    `请使用 web-review-runner 半自动网页端代跑流程，对这篇 Word 稿件进行投稿前预审。`,
+    `Word 文稿路径：${manuscriptPath}`,
+    `原始文件名：${filename}`,
+    `客户信息：${customerInfo}`,
+    `目标模型：网页端 5.5 thinking（请在浏览器中由我手动登录并确认模型）。`,
+    promptSnapshotText,
+    `项目内 web runner skill：${projectWebSkillPath}`,
+    `上下文构建脚本：${projectContextScript}`,
+    "",
+    "执行要求：",
+    "1. 本地后台只负责解析、任务管理、导入整包和生成 Word/PDF 报告；不要调用后台 API 模型配置。",
+    "2. 使用浏览器自动化打开我已登录的网页端模型页面，由我确认上传原始 Word 和发送医学文稿内容。",
+    "3. 每个 Agent 独立对话双跑；每个 Agent 双跑后运行一致性比较并生成合并问题清单。",
+    "4. 裁决者裁定只运行一次；终稿输出只基于裁决者裁定生成客户版 JSON。",
+    "5. 若网页端输出不是合法 JSON，优先在同一阶段发起格式修复请求，不重新审稿。",
+    "6. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON、final_adjudication JSON。",
+    "7. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、每阶段会话/运行编号、上传确认、格式修复和失败重试记录。"
+  ].join("\n");
 }
 
 function cleanFilename(name) {
@@ -2622,7 +2653,7 @@ function parseSkillOutputPackage(packageText) {
   const text = String(packageText || "").trim();
   if (!text) throw new Error("请粘贴 skills 完整输出");
 
-  if (/^[ \t]*artifact_manifest JSON[ \t]*:/im.test(text) || /^[ \t]*agent_merged_issue_lists[ \t]*:/im.test(text)) {
+  if (/^[ \t]*runner_metadata JSON[ \t]*:/im.test(text) || /^[ \t]*artifact_manifest JSON[ \t]*:/im.test(text) || /^[ \t]*agent_merged_issue_lists[ \t]*:/im.test(text)) {
     return parseV21SkillOutputPackage(text);
   }
 
@@ -2677,6 +2708,7 @@ function parseSkillOutputPackage(packageText) {
 
 function parseV21SkillOutputPackage(text) {
   const sections = extractMarkedSections(text, [
+    { key: "runnerMetadata", label: "runner_metadata JSON", pattern: /^[ \t]*runner_metadata[ \t]+JSON[ \t]*:[ \t]*/im, optional: true },
     { key: "artifactManifest", label: "artifact_manifest JSON", pattern: /^[ \t]*artifact_manifest[ \t]+JSON[ \t]*:[ \t]*/im },
     { key: "agentRuns", label: "agent_runs", pattern: /^[ \t]*agent_runs[ \t]*:[ \t]*/im },
     { key: "consistencyReports", label: "agent_consistency_reports", pattern: /^[ \t]*agent_consistency_reports[ \t]*:[ \t]*/im },
@@ -2685,6 +2717,7 @@ function parseV21SkillOutputPackage(text) {
     { key: "finalOutput", label: "final_adjudication JSON", pattern: /^[ \t]*final_adjudication[ \t]+JSON[ \t]*:[ \t]*/im }
   ]);
 
+  const runnerMetadata = sections.runnerMetadata ? parseLooseJson(sections.runnerMetadata) : null;
   const artifactManifest = parseLooseJson(sections.artifactManifest);
   const agentRuns = parseLooseJson(sections.agentRuns);
   const consistencyReports = parseLooseJson(sections.consistencyReports);
@@ -2704,6 +2737,7 @@ function parseV21SkillOutputPackage(text) {
 
   return {
     mode: "v2.1",
+    runnerMetadata,
     artifactManifest,
     agentRuns,
     consistencyReports,
@@ -2990,6 +3024,45 @@ function pushPromptSnapshotSummaryLines(lines, task, options = {}) {
     const adapterHash = prompt.adapterHash ? `adapter ${prompt.adapterHash}` : "adapter -";
     const effectiveHash = prompt.effectiveContentHash || prompt.contentHash || "-";
     lines.push(`- ${prompt.key}｜v${prompt.version}｜${prompt.id}｜effective ${effectiveHash}｜${rawHash}｜${adapterHash}`);
+  }
+  lines.push("");
+}
+
+function pushRunnerMetadataLines(lines, task, options = {}) {
+  const meta = task.runnerMetadata;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return;
+  (options.subsection ? pushSubsection : pushSection)(lines, "代跑器与网页模型元数据");
+  lines.push(`runner：${meta.runner || meta.mode || "-"}`);
+  lines.push(`target_model：${meta.target_model || meta.model || "-"}`);
+  lines.push(`target_url：${meta.target_url || meta.web_url || "-"}`);
+  lines.push(`started_at：${meta.started_at || meta.startedAt || "-"}`);
+  lines.push(`completed_at：${meta.completed_at || meta.completedAt || "-"}`);
+  if (meta.notes) lines.push(`notes：${Array.isArray(meta.notes) ? meta.notes.join("；") : meta.notes}`);
+  const confirmations = Array.isArray(meta.confirmations) ? meta.confirmations : [];
+  if (confirmations.length) {
+    lines.push("上传/发送确认记录：");
+    for (const [index, item] of confirmations.entries()) {
+      const value = typeof item === "object" && item ? item : { note: String(item || "") };
+      lines.push(`- ${index + 1}. ${value.time || "-"}｜${value.action || "-"}｜${value.destination || "-"}｜${value.confirmed_by_user === false ? "未确认" : "已确认"}`);
+    }
+  }
+  const conversations = Array.isArray(meta.conversations) ? meta.conversations : [];
+  if (conversations.length) {
+    lines.push("网页会话记录：");
+    for (const [index, item] of conversations.entries()) {
+      const value = typeof item === "object" && item ? item : { note: String(item || "") };
+      lines.push(`- ${index + 1}. ${value.stage || "-"}｜${value.run || "-"}｜${value.conversation_id || value.url || "-"}｜${value.status || "-"}`);
+      if (value.format_fix_count !== undefined) lines.push(`  格式修复次数：${value.format_fix_count}`);
+      if (value.error) lines.push(`  错误：${value.error}`);
+    }
+  }
+  const retries = Array.isArray(meta.retries) ? meta.retries : [];
+  if (retries.length) {
+    lines.push("失败重试记录：");
+    for (const [index, item] of retries.entries()) {
+      const value = typeof item === "object" && item ? item : { note: String(item || "") };
+      lines.push(`- ${index + 1}. ${value.stage || "-"}｜${value.reason || value.error || "-"}｜${value.action || "-"}`);
+    }
   }
   lines.push("");
 }
@@ -4525,6 +4598,7 @@ function buildStageOutputText(task) {
   pushSection(lines, "一、6 个 Agent 双跑 + 一致性比较输出结果");
   pushArtifactSummaryLines(lines, task.artifactManifest, { subsection: true });
   pushPromptSnapshotSummaryLines(lines, task, { subsection: true });
+  pushRunnerMetadataLines(lines, task, { subsection: true });
   pushStageRunOutputLines(lines, task, { subsection: true });
   pushConsistencyReportLines(lines, task, { subsection: true });
   pushMergedStageOutputLines(lines, task, { subsection: true });
@@ -5134,6 +5208,7 @@ async function bootstrap() {
     const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
     task.manualMode = true;
     task.manualReason = task.manualReason || "管理员导入 skills 人工代跑输出";
+    task.runnerMetadata = parsedPackage.runnerMetadata || null;
     if (parsedPackage.artifactManifest) {
       task.artifactManifest = parsedPackage.artifactManifest;
       const manifestPath = path.join(ARTIFACT_MANIFEST_DIR, `${task.id}.json`);
