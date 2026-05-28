@@ -10,6 +10,9 @@ node_modules/
 # Uploaded manuscripts, generated reports, and debug exports
 storage/
 
+# Local PDF design references and third-party examples
+pdfeg/
+
 # Local manuscripts and raw Word prompt drafts
 *.doc
 *.docx

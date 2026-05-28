@@ -126,6 +126,11 @@ function buildStageUserInput(task, manuscriptText, artifactManifest, imageReview
 function buildAdjudicatorUserInput(task, manuscriptText, artifactManifest, imageReviewChecklist, consistencyReportsText, mergedIssueListsText) {
   return [
     "以下为裁决者裁定材料。请严格返回 adjudicator_review JSON。",
+    "紧凑裁定要求：只输出 final_issue_decisions、priority_issue_ids、source_issue_coverage、adjudication_decisions、excluded_issues 和统计/诊断字段；不要输出 report_text、report_sections 或完整客户报告正文。",
+    "后端物化要求：成立问题的 issue_narrative、submission_risk、evidence_quotes、revision_path 会由后端从六 Agent 合并问题清单继承。你只负责判断每个候选问题保留、合并、排除、升级或降级。",
+    "覆盖表硬性要求：必须输出 source_issue_coverage，逐条覆盖六 Agent 合并问题清单中的每一个来源问题。每条记录必须写 source_stage、source_issue_id 或 source_issue_title、source_severity、action（kept_as / merged_into / excluded）、target_issue_id、reason。",
+    "不得无记录丢弃问题。只有同一定位、同一投稿风险、同一低成本修改动作的问题才允许合并；同根因但修改动作不同的子问题必须保留为独立客户可执行问题。P0/P1 若排除，reason 必须写明证据不足、重复或不成立的具体理由。",
+    "候选项基线要求：若六 Agent 合并问题候选项总数不少于 10 项，final_issue_decisions 不得低于候选项总数的 65%。若低于 65%，不要只补解释，必须恢复被过度合并的问题或逐项重裁。",
     "",
     "【基础任务信息】",
     buildBaseTaskInfo(task),
@@ -150,6 +155,8 @@ function buildAdjudicatorUserInput(task, manuscriptText, artifactManifest, image
 function buildFinalUserInput(task, manuscriptText, artifactManifest, imageReviewChecklist, adjudicatorReviewText, consistencyReportsText, mergedIssueListsText) {
   return [
     "以下为终稿输出材料。请严格返回 final_adjudication JSON，并优先基于 adjudicator_review JSON 生成客户版报告字段。",
+    "报告层输出要求：终稿只输出摘要、总体结论、模型模糊评分、优势短板、六维诊断、投稿建议、风险等级、修订工作量、priority_issue_ids、检查清单和客户版材料完成度摘要。",
+    "一一对应要求：终稿不得二次合并、删减、拆分、重排或降级裁决者问题池。report_content.final_issue_list 可留空或只给 id 引用；后端会从裁决者问题池补全完整问题正文。",
     "",
     "【基础任务信息】",
     buildBaseTaskInfo(task),
@@ -311,8 +318,30 @@ function emptyAdjudicatorTemplate() {
   return {
     adjudication_summary: "200字以内裁决摘要",
     overall_judgment: {},
-    priority_actions: [],
-    final_issue_list: [],
+    final_issue_decisions: [
+      {
+        id: "JR-001",
+        action: "keep",
+        severity: "P1",
+        category: "clinical_methods",
+        primary_dimension: "研究设计与临床逻辑",
+        issue: "最终问题短标题",
+        source_issue_ids: ["clinical_methods:A2-M01"],
+        reason: "保留、合并、升级或降级的裁定理由"
+      }
+    ],
+    priority_issue_ids: ["JR-001"],
+    source_issue_coverage: [
+      {
+        source_stage: "clinical_methods",
+        source_issue_id: "A2-M01",
+        source_issue_title: "来源问题标题",
+        source_severity: "P1",
+        action: "kept_as",
+        target_issue_id: "JR-001",
+        reason: "保留、合并或排除的具体理由"
+      }
+    ],
     adjudication_decisions: [],
     excluded_issues: [],
     severity_counts: { P0: 0, P1: 0, P2: 0, P3: 0, total: 0 },
@@ -337,6 +366,20 @@ function outputPackageTemplate(artifactManifest) {
   );
 
   return [
+    "runner_metadata JSON:",
+    JSON.stringify(
+      {
+        runner: "manual-or-web-browser",
+        target_model: "填写实际模型名称",
+        authorization_mode: "task-level-preapproval",
+        fidelity_contract_version: "source-coverage.v1",
+        fidelity_validation_mode: "strict",
+        notes: []
+      },
+      null,
+      2
+    ),
+    "",
     "artifact_manifest JSON:",
     JSON.stringify(artifactManifest, null, 2),
     "",

@@ -54,13 +54,19 @@ This skill does not call the web app API, does not read API configs, and does no
    - Use the `adjudicator_review` system prompt.
    - Include the manuscript material, `artifact_manifest`, six consistency reports, and six merged issue lists.
    - Run it once only; do not double-run it and do not pass it through the consistency comparator.
-   - Return strict JSON only, without Markdown fences or extra prose.
+   - Return strict compact JSON only, without Markdown fences or extra prose. Do not output `report_text`, `report_sections`, or a customer-facing report draft in this stage.
+   - Output `final_issue_decisions` instead of rewriting every long issue. The local backend materializes `adjudicator_review.final_issue_list` from `final_issue_decisions + agent_merged_issue_lists`, preserving `issue_narrative`, `submission_risk`, `evidence_quotes`, and `revision_path` from the Agent outputs.
+   - Output `source_issue_coverage` with one record for every issue in the six merged Agent lists. Each record must include source stage, source issue id/title, source severity, action (`kept_as`, `merged_into`, or `excluded`), target issue id, and reason. Do not silently drop any source issue.
+   - Only merge issues when they share the same precise location, same submission risk, and same low-cost revision action. If the root cause is similar but the customer must perform different edits, keep separate actionable issues. P0/P1 exclusions require a concrete evidence-based reason.
+   - If the six merged Agent lists contain at least 10 candidate issues, `final_issue_decisions` must keep at least 65% of them. If the result falls below 65%, restore over-merged issues or re-adjudicate item by item; do not merely add explanations to a compressed list.
+   - Do not output final scores in adjudicator review; final scoring belongs to `final_adjudication`.
 7. Execute final output only after `adjudicator_review JSON` is complete:
    - Use the `final_adjudication` system prompt. Its business meaning is now "终稿输出".
-   - Use `adjudicator_review JSON` as the primary source for the final report fields.
-   - Include the manuscript material, `artifact_manifest`, six consistency reports, and six merged issue lists.
-   - Produce customer-facing report content: priority 5-10 issues, precise searchable locations, strengths, weaknesses, final issue list, and no internal double-run, comparator, prompt, token, or extraction-process wording in customer fields.
-   - Produce `report_content.score_summary` with model-generated fuzzy scoring: `overall_score`, `overall_score_label`, `overall_score_rationale`, and six `dimension_scores`. Do not use a fixed backend deduction formula in the customer-facing rationale.
+   - Use `adjudicator_review JSON` as the primary source for report-level fields and issue IDs.
+   - Do not re-review the manuscript or change adjudicator conclusions. Output only customer-facing report-level data: summary, conclusion, priority issue IDs, strengths, weaknesses, six-dimensional diagnosis, checklist, and no internal double-run, comparator, prompt, token, or extraction-process wording in customer fields.
+   - `report_content.final_issue_list` may be empty or contain only issue references. The local backend will fill it from the adjudicator issue pool and generate expanded customer-facing issue text.
+   - Do not merge, delete, reorder, split, downgrade, or reword away any adjudicated issue in the final output step.
+   - Produce `report_content.score_summary` from the final issue pool using model fuzzy judgment. Do not use backend-style mechanical deduction language.
    - Return strict JSON only, without Markdown fences or extra prose.
 8. Validate the final JSON with:
    ```bash
@@ -72,6 +78,16 @@ This skill does not call the web app API, does not read API configs, and does no
 Return a backend-pasteable V2.1 package in this exact order:
 
 ```text
+runner_metadata JSON:
+{
+  "runner": "codex-skill",
+  "target_model": "manual",
+  "authorization_mode": "local-manual-run",
+  "fidelity_contract_version": "source-coverage.v1",
+  "fidelity_validation_mode": "strict",
+  "notes": []
+}
+
 artifact_manifest JSON:
 {
   "...": "Python 文件状态检测结果",
@@ -159,9 +175,35 @@ agent_merged_issue_lists:
 adjudicator_review JSON:
 {
   "adjudication_summary": "...",
-  "overall_judgment": {},
-  "priority_actions": [],
-  "final_issue_list": [],
+  "overall_judgment": {
+    "submission_recommendation": "...",
+    "risk_level": "...",
+    "revision_workload": "..."
+  },
+  "final_issue_decisions": [
+    {
+      "id": "JR-001",
+      "action": "keep",
+      "severity": "P1",
+      "category": "clinical_methods",
+      "primary_dimension": "研究设计与临床逻辑",
+      "issue": "最终问题短标题",
+      "source_issue_ids": ["clinical_methods:A2-M01"],
+      "reason": "保留、合并、升级或降级的裁定理由"
+    }
+  ],
+  "priority_issue_ids": ["JR-001"],
+  "source_issue_coverage": [
+    {
+      "source_stage": "clinical_methods",
+      "source_issue_id": "A2-M01",
+      "source_issue_title": "来源问题标题",
+      "source_severity": "P1",
+      "action": "kept_as",
+      "target_issue_id": "JR-001",
+      "reason": "保留、合并或排除的具体理由"
+    }
+  ],
   "adjudication_decisions": [],
   "excluded_issues": [],
   "severity_counts": { "P0": 0, "P1": 0, "P2": 0, "P3": 0, "total": 0 },
@@ -186,25 +228,30 @@ final_adjudication JSON:
   "report_content": {
     "score_summary": {
       "overall_score": 0,
+      "overall_score_10": 0,
+      "overall_score_text": "X.X / 10",
       "overall_score_label": "暂不建议投稿|大修后可投稿|勉强达到可投稿水平|投稿准备较成熟",
       "overall_score_rationale": "客户可读的综合评分理由，不写机械扣分规则",
       "dimension_scores": [
-        { "key": "selection_innovation", "title": "选题创新性", "score": 0, "rationale": "一句话评分理由" },
-        { "key": "clinical_methods", "title": "研究设计与临床逻辑", "score": 0, "rationale": "一句话评分理由" },
-        { "key": "statistical_results", "title": "统计分析与证据支撑", "score": 0, "rationale": "一句话评分理由" },
-        { "key": "numerical_audit", "title": "数据一致性", "score": 0, "rationale": "一句话评分理由" },
-        { "key": "figure_table_visual_audit", "title": "图表质量与呈现完整性", "score": 0, "rationale": "一句话评分理由" },
-        { "key": "submission_safety_expression", "title": "投稿合规与成稿完整性", "score": 0, "rationale": "一句话评分理由" }
+        { "key": "selection_innovation", "title": "选题创新性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
+        { "key": "clinical_methods", "title": "研究设计与临床逻辑", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
+        { "key": "statistical_results", "title": "统计分析与证据支撑", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
+        { "key": "numerical_audit", "title": "数据一致性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
+        { "key": "figure_table_visual_audit", "title": "图表质量与呈现完整性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
+        { "key": "submission_safety_expression", "title": "投稿合规与成稿完整性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" }
       ]
-    }
+    },
+    "priority_issue_ids": [],
+    "final_issue_list": [],
+    "report_sections": {}
   }
 }
 ```
 
 The `summary` field must be no longer than 200 Chinese characters. Array fields must be JSON arrays. Array items may be strings or objects.
-The optional `report_content` object should carry adjudicator-derived structured data for PDF/report visualization where available. When `adjudicator_review JSON` or a complete issue pool is available, it must include the model-generated `score_summary`; the app reads these scores directly for Word/PDF and does not compute customer-facing scores by mechanical deduction.
+The optional `report_content` object should carry adjudicator-derived structured data for PDF/report visualization where available. When `adjudicator_review JSON` or a complete issue pool is available, it must include `score_summary`; the app reads these scores directly for Word/PDF and does not compute customer-facing scores by mechanical deduction. If upstream scoring is in `X.X / 10`, preserve that text and provide the percentage equivalent for charts.
 
-For debugging quality, do not omit `issue_narrative` from Agent, comparator, or adjudicator issue objects. The admin stage-output TXT uses this field first, then falls back to `evidence` / `recommendation`.
+For debugging quality, do not omit `issue_narrative` from Agent or comparator issue objects. The compact adjudicator may omit long issue bodies because the backend materializes them from the Agent merged issue lists.
 
 ## Prompt Snapshot
 

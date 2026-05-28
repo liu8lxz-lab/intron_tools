@@ -50,6 +50,7 @@ const statusClass = {
   manual_stage_pending: "manual_stage_pending",
   manual_final_pending: "manual_final_pending"
 };
+const historicalTaskStatuses = new Set(["succeeded", "failed", "cancelled"]);
 
 function setMessage(node, text, type = "") {
   node.textContent = text;
@@ -435,6 +436,7 @@ async function loadTasks() {
   taskTable.innerHTML = tasks
     .map((task) => {
       const summary = task.error || task.summary || task.manualReason || "";
+      const isHistorical = historicalTaskStatuses.has(task.status);
       return `
         <tr>
           <td><code>${task.id}</code></td>
@@ -448,8 +450,8 @@ async function loadTasks() {
               ${task.reportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report"><button class="secondary compact" type="button">Word</button></a>` : ""}
               ${task.pdfReportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report.pdf"><button class="secondary compact" type="button">PDF</button></a>` : ""}
               <button class="secondary compact" data-manual-task="${task.id}" type="button">人工代跑</button>
-              <button class="compact" data-retry-task="${task.id}" type="button">重试</button>
-              <button class="danger compact" data-cancel-task="${task.id}" type="button">取消</button>
+              ${isHistorical ? `<button class="compact" data-retry-task="${task.id}" type="button">重试</button>` : ""}
+              ${isHistorical ? `<button class="danger compact" data-delete-task="${task.id}" type="button">删除</button>` : `<button class="danger compact" data-cancel-task="${task.id}" type="button">取消</button>`}
             </div>
           </td>
         </tr>
@@ -478,6 +480,22 @@ async function loadTasks() {
       try {
         await apiFetch(`/api/v1/admin/review-tasks/${button.dataset.cancelTask}/cancel`, { method: "POST" });
         setMessage(taskMessage, "已取消任务。", "ok");
+        await loadTasks();
+      } catch (error) {
+        setMessage(taskMessage, error.message, "error");
+      }
+    });
+  });
+
+  taskTable.querySelectorAll("[data-delete-task]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const task = tasks.find((item) => item.id === button.dataset.deleteTask);
+      const filename = task?.originalFilename || "未命名文件";
+      const confirmed = window.confirm(`确认删除任务 ${button.dataset.deleteTask}？\n文件：${filename}\n删除后不可恢复，并会清理上传稿件、解析文本、报告和文件检测产物。`);
+      if (!confirmed) return;
+      try {
+        await apiFetch(`/api/v1/admin/review-tasks/${button.dataset.deleteTask}`, { method: "DELETE" });
+        setMessage(taskMessage, "任务已删除。", "ok");
         await loadTasks();
       } catch (error) {
         setMessage(taskMessage, error.message, "error");

@@ -54,8 +54,10 @@ const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 50 * 1024 * 1024
 const MAX_MANUSCRIPT_CHARS = Number(process.env.MAX_MANUSCRIPT_CHARS || 120_000);
 const PYTHON_BIN = process.env.PYTHON_BIN || "python3";
 const REPORT_TITLE = "投稿前预审质控报告与修改意见";
-const DOCX_REPORT_SCHEMA_VERSION = "customer-word-model-score-cn-fields-20260518";
-const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-model-score-20260518";
+const DOCX_REPORT_SCHEMA_VERSION = "customer-word-detailed-issue-sections-20260526";
+const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-structured-fields-20260527";
+const FIDELITY_RETENTION_MIN_SOURCE_COUNT = 10;
+const FIDELITY_MIN_ADJUDICATOR_RETENTION_RATE = 0.65;
 const DEFAULT_MODEL_TOKEN_BUDGETS = {
   agent: 16000,
   comparator: 12000,
@@ -789,6 +791,7 @@ source_runs 使用 ["run_1"]、["run_2"] 或 ["run_1", "run_2"]。
 4. Figure/Table/Supplementary material 编号。
 5. 样本量、事件数、百分比、P 值、OR、HR、RR、β、AUC、95%CI、时间窗、分组名称、模型名称、量表名称和研究终点名称。
 6. 裁决者已写明的排除理由、降级理由、证据不足或需人工复核提示。
+7. 裁决者或上游问题中的 issue_narrative、submission_risk、risk_analysis、evidence_quotes、revision_path。终稿可以客户友好化语序，但不得删除审稿逻辑、投稿风险、原文证据和具体修订步骤。
 
 不得把严重问题软化为一般提醒，不得把“可能存在偏倚”改写为“已经证明错误”，不得把观察性关联改写为因果作用，不得把证据不足改写为结论错误。
 
@@ -874,6 +877,8 @@ report_content 是可选对象；但只要输入中有 adjudicator_review JSON �
 12. report_content.priority_actions 输出 5-10 条优先处理问题，每条必须包含 severity、primary_dimension、issue、location、explanation、recommendation。
 13. report_content.final_issue_list 输出最终完整问题池。每条问题必须包含 severity、category、primary_dimension、issue、location、explanation、recommendation、confidence；不得包含 source_runs、source_issue_ids、prompt_id、token、latency 等内部字段。
 14. report_content.artifact_completion_summary 只写客户可理解的图表与材料完成度摘要，不写 Python、图片 ID、提取路径或技术状态。
+15. report_content.priority_actions 和 report_content.final_issue_list 中每条问题必须尽量保留 issue_narrative、submission_risk、evidence_quotes、revision_path。若输入 adjudicator_review 已提供这些字段，必须继承或同等信息密度改写；不得只保留 explanation/recommendation。
+16. final_review_text 展开问题时必须使用 issue_narrative、submission_risk 和 revision_path，不能把问题压缩成短列表或摘要索引。
 
 输出强度要求：优先保证 P0/P1 不遗漏；低价值 P3 严格少列；语言要清楚、直接、可执行，不写“建议酌情处理”“适当优化”“进一步完善”等空泛表述。`,
   adjudicator_review: `你是“裁决者 Agent：期刊编辑型终审裁定者”。你的任务是站在期刊编辑、临床同行审稿人、统计审稿人和医学科研质控负责人的综合视角，对 Python 文件状态检测结果、完整论文全文、六个 Agent 经双轮审稿和一致性比较后的合并问题清单进行一次终审裁定。
@@ -896,7 +901,7 @@ report_content 是可选对象；但只要输入中有 adjudicator_review JSON �
 2. 你必须回到论文全文复核每个已提出问题是否成立，不能仅复制 Agent 原文。
 3. 你负责跨 Agent 去重、同根因归并、风险等级重新裁定、优先级排序、P0/P1 保留或排除理由说明、完整终审问题池锁定。
 4. 所有经原文复核后成立的问题都必须进入 final_issue_list。不得因为问题级别较低、报告会变长、客户未必处理或你认为不是优先事项而静默删除。
-5. 多个 Agent 指向同一根因时可以合并为一个综合问题，但合并后的 explanation 和 recommendation 必须完整覆盖原始问题中成立的关键事实、投稿风险和必要修稿动作。
+5. 多个 Agent 指向同一根因时可以合并为一个综合问题，但合并后的 issue_narrative、submission_risk、evidence_quotes、revision_path、explanation 和 recommendation 必须完整覆盖原始问题中成立的关键事实、审稿质疑逻辑、投稿风险和必要修稿动作。不得把 Agent 的长篇审稿正文压缩成一句泛泛提醒。
 6. 单轮出现或低一致性出现的 P0/P1 不得直接丢弃。若复核后排除或降级，必须写入 adjudication_decisions 和 excluded_issues，并说明原文复核依据。
 7. 你只运行一次，不做双跑，不调用一致性比较器，不输出重合度之外的新比较评价。
 
@@ -907,6 +912,7 @@ report_content 是可选对象；但只要输入中有 adjudicator_review JSON �
 4. 不得把数字矛盾弱化为一般表达问题，不得把临床定义缺陷写成“需完善说明”，不得把统计风险泛化为“建议优化模型”，不得把合规风险淡化为普通格式问题。
 5. 所有 priority_actions 和 final_issue_list 问题都必须有可定位位置。location 必须包含章节/小节/图号/表号之一，并同时包含至少一个可直接在文稿中搜索到的原文短句、图注片段、变量名、数字、声明区字段或表格行列名。不得只写 Methods、Results、Discussion、Figure 1、Table 2、摘要等粗略位置。
 6. 若 Agent 原始问题定位过粗，你必须回到全文材料中寻找可搜索定位；确实找不到时，在 location 中写“需人工复核具体位置”，并在 explanation 中说明依据不足。不得伪造原文短句。
+7. 裁决者必须保留全链路信息密度。若上游合并问题中存在 issue_narrative、risk_analysis、evidence_quotes、revision_path，成立问题必须继承或重写为同等信息密度的 issue_narrative、submission_risk、evidence_quotes、revision_path。P0/P1 的 issue_narrative 一般应为 250-600 中文字符，P2 一般应为 150-350 中文字符。
 
 【四、风险等级】
 只能使用 P0、P1、P2、P3。
@@ -947,6 +953,10 @@ priority_actions 必须面向客户修稿排序，而不是面向内部调试排
       "location": "具体精确位置，必须包含章节/图表/表格 + 可搜索原文短句、图注片段、变量名或数字",
       "explanation": "说明哪里出了问题、为什么影响投稿或审稿信任",
       "recommendation": "1-3句低成本处理动作",
+      "issue_narrative": "完整审稿正文，覆盖依据、审稿质疑逻辑、影响环节、不处理后果和低成本修订路径",
+      "submission_risk": "不处理会影响的投稿判断、编辑初筛、外审质疑或返修环节",
+      "evidence_quotes": ["可搜索原文短句、图注片段、变量名、数字或表格行列名"],
+      "revision_path": ["低成本修订步骤1", "低成本修订步骤2"],
       "confidence": 0.8,
       "source_agents": ["selection_innovation"],
       "source_issue_ids": ["selection_innovation:A1-M01"],
@@ -964,6 +974,10 @@ priority_actions 必须面向客户修稿排序，而不是面向内部调试排
       "location": "具体精确位置，必须包含章节/图表/表格 + 可搜索原文短句、图注片段、变量名或数字",
       "explanation": "说明问题本质、原文依据和投稿风险",
       "recommendation": "1-3句低成本处理动作",
+      "issue_narrative": "完整审稿正文，覆盖依据、审稿质疑逻辑、影响环节、不处理后果和低成本修订路径",
+      "submission_risk": "不处理会影响的投稿判断、编辑初筛、外审质疑或返修环节",
+      "evidence_quotes": ["可搜索原文短句、图注片段、变量名、数字或表格行列名"],
+      "revision_path": ["低成本修订步骤1", "低成本修订步骤2"],
       "confidence": 0.8,
       "source_agents": ["selection_innovation"],
       "source_issue_ids": ["selection_innovation:A1-M01"],
@@ -1048,7 +1062,8 @@ priority_actions 必须面向客户修稿排序，而不是面向内部调试排
 4. issue_distribution 以 final_issue_list 的主要归属维度为统计口径，一个问题只计入一个主要维度。
 5. excluded_issues 只记录确认不成立、被完整合并或因证据不足不能作为独立终审问题的问题；P0/P1 被排除时 exclusion_reason 必须具体。
 6. 若没有被排除问题，excluded_issues 返回空数组。
-7. 若没有问题，final_issue_list、priority_actions、excluded_issues 均返回空数组，并在 adjudication_summary 与 overall_judgment 中说明未发现可列出的终审问题。`
+7. 若没有问题，final_issue_list、priority_actions、excluded_issues 均返回空数组，并在 adjudication_summary 与 overall_judgment 中说明未发现可列出的终审问题。
+8. priority_actions 与 final_issue_list 中同一问题的信息密度必须一致，不得在优先问题中写得详细、完整问题清单中压缩为“同上”或短句。`
 };
 
 const FIELD_LABELS = {
@@ -1061,6 +1076,8 @@ const FIELD_LABELS = {
   pre_submission_checklist: "投稿前检查清单",
   final_review_text: "完整报告正文"
 };
+
+const DELETABLE_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
 let db;
 let masterKey;
@@ -1581,7 +1598,7 @@ function buildManualSkillInstructionText(task) {
   const projectSkillPath = path.join(ROOT, "skills", "sci-pre-review-runner", "SKILL.md");
   const projectSkillScript = path.join(ROOT, "skills", "sci-pre-review-runner", "scripts", "build_review_context.mjs");
   const promptSnapshotText = task.promptSnapshotPath ? `本任务提示词快照路径为：${task.promptSnapshotPath}；运行脚本时请加入 --prompts "${task.promptSnapshotPath}"，不要改用后台后续新版本提示词。` : "如后台已生成本任务提示词快照，请优先使用该快照，不要改用后台后续新版本提示词。";
-  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner v2.1 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 6 个 Agent 双跑、每个 Agent 一致性比较、6 份 Agent 合并问题清单；随后运行 adjudicator_review JSON 进行裁决者裁定；最后运行 final_adjudication JSON（业务含义为终稿输出），且终稿输出必须基于裁决者裁定结果生成。请输出可粘贴回后台的完整 v2.1 三阶段结果包，格式需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON。`;
+  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner v2.1 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 6 个 Agent 双跑、每个 Agent 一致性比较、6 份 Agent 合并问题清单；随后运行 adjudicator_review JSON 进行裁决者裁定，裁决者采用紧凑裁定协议，只输出 final_issue_decisions、priority_issue_ids、source_issue_coverage 等裁定字段，不输出 report_text 或完整客户报告正文；最后运行 final_adjudication JSON（业务含义为终稿输出），终稿只输出客户版报告层字段、模型模糊评分和 priority_issue_ids，完整问题正文由后台物化。请输出可粘贴回后台的完整 v2.1 三阶段结果包，格式需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON。`;
 }
 
 function buildWebReviewRunnerInstructionText(task) {
@@ -1604,12 +1621,15 @@ function buildWebReviewRunnerInstructionText(task) {
     "",
     "执行要求：",
     "1. 本地后台只负责解析、任务管理、导入整包和生成 Word/PDF 报告；不要调用后台 API 模型配置。",
-    "2. 使用浏览器自动化打开我已登录的网页端模型页面，由我确认上传原始 Word 和发送医学文稿内容。",
-    "3. 每个 Agent 独立对话双跑；每个 Agent 双跑后运行一致性比较并生成合并问题清单。",
-    "4. 裁决者裁定只运行一次；终稿输出只基于裁决者裁定生成客户版 JSON。",
-    "5. 若网页端输出不是合法 JSON，优先在同一阶段发起格式修复请求，不重新审稿。",
-    "6. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON、final_adjudication JSON。",
-    "7. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、每阶段会话/运行编号、上传确认、格式修复和失败重试记录。"
+    "2. 使用浏览器自动化或 Computer Use 桌面自动化操作我已登录并已选好模型的网页端页面；本指令即为同一 Word 文件、同一目标网页、同一模型的一次性任务级预授权，允许上传原始 Word 并发送医学文稿内容，后续非异常阶段不要反复向我确认。",
+    "3. 仅在登录、验证码、账号恢复、付款、浏览器安全拦截、模型/目标网页/文件路径变化、疑似误发、上传状态不可确认、输出截断无法恢复或 JSON 修复失败时暂停询问我。",
+    "4. 每个 Agent 独立对话双跑；每个 Agent 双跑后运行一致性比较并生成合并问题清单。",
+    "5. 裁决者裁定只运行一次；采用紧凑裁定协议，输出 final_issue_decisions、priority_issue_ids 和 source_issue_coverage，不输出 report_text 或完整客户报告正文；若候选项不少于 10 项，final_issue_decisions 至少保留 65%。",
+    "6. 终稿输出只基于裁决者裁定生成客户版报告层 JSON；report_content.final_issue_list 可留空或只给 ID 引用，后台会从裁决者问题池物化完整问题正文，priority_issue_ids 是 5-10 条优先子集。",
+    "7. 若网页端裁决者输出 report_text、超长 final_issue_list 或截断 JSON，优先在同一阶段发起 compact JSON 格式修复请求，不重新审稿。",
+    "8. 按固定状态机执行：新建独立会话、必要时上传 Word、剪贴板粘贴长 prompt、发送、等待完成、优先点击复制回复、保存 raw、严格 JSON 校验、必要时同会话格式修复、落盘 JSON。",
+    "9. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON、final_adjudication JSON。",
+    "10. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、authorization_mode=task-level-preapproval、fidelity_contract_version=source-coverage.v1、fidelity_validation_mode=strict、每阶段会话/运行编号、上传确认、格式修复、失败重试和暂停事件记录。"
   ].join("\n");
 }
 
@@ -2348,8 +2368,10 @@ function normalizeIssue(item, stageKey) {
   const value = typeof item === "string" ? { issue: item } : item || {};
   const severity = normalizeSeverity(value.severity || value.priority || value.level);
   const normalized = {
+    id: String(value.id || value.issue_id || value.issueId || "").trim(),
     severity,
     category: String(value.category || stageKey || "general"),
+    primary_dimension: String(value.primary_dimension || value.primaryDimension || value.dimension || "").trim(),
     issue: String(value.issue || value.title || value.problem || "").trim(),
     evidence: String(value.evidence || value.detail || value.reason || "需人工核对").trim(),
     location: String(value.location || value.position || "未标明").trim(),
@@ -2358,17 +2380,23 @@ function normalizeIssue(item, stageKey) {
     source_stage: stageKey
   };
   const issueNarrative = String(value.issue_narrative || value.issueNarrative || value.narrative || "").trim();
+  const submissionRisk = String(value.submission_risk || value.submissionRisk || value.risk || value.riskAnalysis || value.risk_analysis || "").trim();
   const riskAnalysis = String(value.risk_analysis || value.riskAnalysis || "").trim();
   const revisionPath = normalizeStringArray(value.revision_path || value.revisionPath || value.revision_steps || value.revisionSteps);
   const evidenceQuotes = normalizeStringArray(value.evidence_quotes || value.evidenceQuotes || value.quotes);
   if (issueNarrative) normalized.issue_narrative = issueNarrative;
+  if (submissionRisk) normalized.submission_risk = submissionRisk;
   if (riskAnalysis) normalized.risk_analysis = riskAnalysis;
   if (revisionPath.length) normalized.revision_path = revisionPath;
   if (evidenceQuotes.length) normalized.evidence_quotes = evidenceQuotes;
   const sourceRuns = normalizeSourceRuns(value.source_runs || value.sourceRuns || value.source_run || value.sourceRun);
   const sourceIssueIds = normalizeStringArray(value.source_issue_ids || value.sourceIssueIds || value.source_ids || value.sourceIds);
+  const sourceAgents = normalizeStringArray(value.source_agents || value.sourceAgents || value.source_agent || value.sourceAgent);
+  const adjudicationAction = String(value.adjudication_action || value.adjudicationAction || value.action || "").trim();
   if (sourceRuns.length) normalized.source_runs = sourceRuns;
   if (sourceIssueIds.length) normalized.source_issue_ids = sourceIssueIds;
+  if (sourceAgents.length) normalized.source_agents = sourceAgents;
+  if (adjudicationAction) normalized.adjudication_action = adjudicationAction;
   return normalized;
 }
 
@@ -2735,6 +2763,11 @@ function parseV21SkillOutputPackage(text) {
     };
   });
 
+  const adjudicatorJson = sections.adjudicatorOutput
+    ? materializeAdjudicatorJson(parseAdjudicatorJson(sections.adjudicatorOutput), stageOutputs)
+    : null;
+  const finalJson = materializeFinalJson(parseStrictFinalJson(sections.finalOutput), adjudicatorJson);
+
   return {
     mode: "v2.1",
     runnerMetadata,
@@ -2743,9 +2776,9 @@ function parseV21SkillOutputPackage(text) {
     consistencyReports,
     stageOutputs,
     adjudicatorOutput: sections.adjudicatorOutput?.trim() || "",
-    adjudicatorJson: sections.adjudicatorOutput ? parseAdjudicatorJson(sections.adjudicatorOutput) : null,
+    adjudicatorJson,
     finalOutput: sections.finalOutput.trim(),
-    finalJson: parseStrictFinalJson(sections.finalOutput)
+    finalJson
   };
 }
 
@@ -2783,6 +2816,627 @@ function parseAdjudicatorJson(text) {
   } catch (error) {
     throw new Error(`裁决者裁定 JSON 无法解析：${error.message}`);
   }
+}
+
+function issueShortCode(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/\b(?:A[1-6]-M\d+|A[1-6]-\d+|J-\d+|ADJ-\d+)\b/i);
+  return match ? match[0].toUpperCase() : "";
+}
+
+function normalizedCoverageText(value) {
+  return String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/[｜|:：,，;；.。()[\]【】]/g, "")
+    .toLowerCase();
+}
+
+function sourceIssueDescriptor(stageKey, issue, index) {
+  const issueText = String(issue?.issue || issue?.title || issue?.problem || "").trim();
+  const sourceIssueIds = normalizeStringArray(issue?.source_issue_ids || issue?.sourceIssueIds || issue?.source_ids || issue?.sourceIds);
+  const code = String(issue?.id || issue?.issue_id || issue?.issueId || issueShortCode(issueText) || sourceIssueIds[0] || `${stageKey}-${index + 1}`).trim();
+  return {
+    stage: stageKey,
+    code,
+    key: `${stageKey}:${code}`,
+    severity: normalizeSeverity(issue?.severity || "P2"),
+    title: issueText || code,
+    normalizedTitle: normalizedCoverageText(issueText),
+    issue
+  };
+}
+
+function collectSourceIssueDescriptorsFromStageOutputs(stageOutputs) {
+  const descriptors = [];
+  for (const stageOutput of Array.isArray(stageOutputs) ? stageOutputs : []) {
+    const stageKey = String(stageOutput?.stage || "").trim();
+    const issues = Array.isArray(stageOutput?.issues) ? stageOutput.issues : [];
+    for (const [index, issue] of issues.entries()) {
+      descriptors.push(sourceIssueDescriptor(stageKey, issue, index));
+    }
+  }
+  return descriptors;
+}
+
+function sourceIssueReferenceValues(descriptor) {
+  const issue = descriptor.issue || {};
+  return [
+    descriptor.key,
+    descriptor.code,
+    `${descriptor.stage}:${descriptor.code}`,
+    issue.id,
+    issue.issue_id,
+    issue.issueId,
+    ...(Array.isArray(issue.source_issue_ids) ? issue.source_issue_ids : []),
+    ...(Array.isArray(issue.sourceIssueIds) ? issue.sourceIssueIds : [])
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function buildSourceIssueLookup(descriptors) {
+  const byId = new Map();
+  const byTitle = new Map();
+  for (const descriptor of descriptors) {
+    for (const value of sourceIssueReferenceValues(descriptor)) {
+      const upper = value.toUpperCase();
+      if (upper && !byId.has(upper)) byId.set(upper, descriptor);
+      const normalized = normalizedCoverageText(value);
+      if (normalized && !byId.has(normalized)) byId.set(normalized, descriptor);
+    }
+    if (descriptor.normalizedTitle && !byTitle.has(descriptor.normalizedTitle)) {
+      byTitle.set(descriptor.normalizedTitle, descriptor);
+    }
+  }
+  return { byId, byTitle };
+}
+
+function resolveSourceIssueDescriptor(ref, descriptors, lookup) {
+  const text = String(ref || "").trim();
+  if (!text) return null;
+  const candidates = [
+    text,
+    text.replace(/^run_[12]\s*[:：]\s*/i, ""),
+    text.replace(/^source\s*[:：]\s*/i, "")
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const upper = candidate.toUpperCase();
+    if (lookup.byId.has(upper)) return lookup.byId.get(upper);
+    const normalized = normalizedCoverageText(candidate);
+    if (lookup.byId.has(normalized)) return lookup.byId.get(normalized);
+    if (lookup.byTitle.has(normalized)) return lookup.byTitle.get(normalized);
+    const match = descriptors.find((descriptor) => {
+      const code = descriptor.code.toUpperCase();
+      const key = descriptor.key.toUpperCase();
+      return upper.includes(code) || upper.includes(key) || key.includes(upper);
+    });
+    if (match) return match;
+  }
+  return null;
+}
+
+function coverageEntrySourceRefs(entry) {
+  return [
+    entry?.source_issue_key,
+    entry?.source_issue_id,
+    entry?.sourceIssueId,
+    entry?.issue_id,
+    entry?.id,
+    ...(Array.isArray(entry?.source_issue_ids) ? entry.source_issue_ids : []),
+    ...(Array.isArray(entry?.sourceIssueIds) ? entry.sourceIssueIds : [])
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function decisionSourceRefs(decision) {
+  return [
+    decision?.source_issue_key,
+    decision?.source_issue_id,
+    decision?.sourceIssueId,
+    decision?.source_id,
+    decision?.sourceId,
+    ...(Array.isArray(decision?.source_issue_ids) ? decision.source_issue_ids : []),
+    ...(Array.isArray(decision?.sourceIssueIds) ? decision.sourceIssueIds : []),
+    ...(Array.isArray(decision?.source_ids) ? decision.source_ids : []),
+    ...(Array.isArray(decision?.sourceIds) ? decision.sourceIds : [])
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function uniqueText(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values.flatMap((item) => Array.isArray(item) ? item : [item])) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const key = normalizedCoverageText(text);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
+}
+
+function firstNonEmpty(...values) {
+  return values.map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+function issueNarrativeFromSource(issue) {
+  return firstNonEmpty(
+    issue.issue_narrative,
+    issue.issueNarrative,
+    issue.narrative,
+    issue.evidence,
+    issue.detail,
+    issue.reason
+  );
+}
+
+function dimensionTitleForIssue(issue, fallbackCategory = "") {
+  return dimensionForCategory(issue?.category || fallbackCategory || "", issue?.primary_dimension || issue?.dimension || "").title;
+}
+
+function materializeIssueFromSources(decision, sourceDescriptors, index) {
+  const sources = sourceDescriptors.map((descriptor) => descriptor.issue || {}).filter(Boolean);
+  const primary = sources[0] || {};
+  const targetId = firstNonEmpty(
+    decision?.target_issue_id,
+    decision?.targetIssueId,
+    decision?.final_issue_id,
+    decision?.finalIssueId,
+    decision?.id,
+    `JR-${String(index + 1).padStart(3, "0")}`
+  );
+  const category = firstNonEmpty(decision?.category, decision?.primary_category, primary.category, sourceDescriptors[0]?.stage, "cross_agent");
+  const severity = normalizeSeverity(decision?.severity_after || decision?.severityAfter || decision?.severity || primary.severity);
+  const sourceIssueIds = uniqueText([
+    decisionSourceRefs(decision || {}),
+    sourceDescriptors.map((descriptor) => descriptor.key),
+    sources.map((issue) => issue.source_issue_ids || issue.sourceIssueIds || [])
+  ]);
+  const sourceAgents = uniqueText([
+    decision?.source_agents || decision?.sourceAgents,
+    sourceDescriptors.map((descriptor) => descriptor.stage),
+    sources.map((issue) => issue.source_agents || issue.sourceAgents || [])
+  ]);
+  const sourceRuns = Array.from(new Set(sources.flatMap((issue) => normalizeSourceRuns(issue.source_runs || issue.sourceRuns || issue.source_run || issue.sourceRun))));
+  const evidenceQuotes = uniqueText([
+    decision?.evidence_quotes || decision?.evidenceQuotes,
+    sources.map((issue) => issue.evidence_quotes || issue.evidenceQuotes || []),
+    sources.map((issue) => issue.location)
+  ]).slice(0, 12);
+  const revisionPath = uniqueText([
+    decision?.revision_path || decision?.revisionPath || decision?.revision_steps || decision?.revisionSteps,
+    sources.map((issue) => issue.revision_path || issue.revisionPath || issue.revision_steps || issue.revisionSteps || []),
+    sources.map((issue) => issue.recommendation)
+  ]).slice(0, 12);
+  const issueNarrative = firstNonEmpty(
+    decision?.issue_narrative,
+    decision?.issueNarrative,
+    decision?.narrative,
+    uniqueText(sources.map(issueNarrativeFromSource)).join("；")
+  );
+  const submissionRisk = firstNonEmpty(
+    decision?.submission_risk,
+    decision?.submissionRisk,
+    decision?.risk,
+    decision?.risk_analysis,
+    uniqueText(sources.map((issue) => issue.submission_risk || issue.submissionRisk || issue.risk || issue.risk_analysis || issue.riskAnalysis)).join("；")
+  );
+
+  return {
+    id: targetId,
+    severity,
+    category,
+    primary_dimension: firstNonEmpty(decision?.primary_dimension, decision?.primaryDimension, decision?.dimension, primary.primary_dimension, primary.dimension, dimensionTitleForIssue(primary, category)),
+    issue: firstNonEmpty(decision?.issue, decision?.title, decision?.problem, primary.issue, primary.title, `终审问题 ${index + 1}`),
+    location: firstNonEmpty(decision?.location_override, decision?.locationOverride, decision?.location, decision?.position, uniqueText(sources.map((issue) => issue.location)).join("；"), "需人工复核具体位置"),
+    explanation: firstNonEmpty(decision?.explanation_override, decision?.explanationOverride, decision?.explanation, decision?.detail, decision?.evidence, uniqueText(sources.map((issue) => issue.evidence || issue.detail || issue.reason)).join("；"), issueNarrative, "需人工复核问题依据。"),
+    evidence: firstNonEmpty(decision?.evidence, uniqueText(sources.map((issue) => issue.evidence)).join("；")),
+    recommendation: firstNonEmpty(decision?.recommendation_override, decision?.recommendationOverride, decision?.recommendation, decision?.suggestion, decision?.fix, uniqueText(sources.map((issue) => issue.recommendation || issue.suggestion || issue.fix)).join("；"), "建议按来源问题逐项完成低成本修订。"),
+    issue_narrative: issueNarrative,
+    submission_risk: submissionRisk,
+    risk_analysis: firstNonEmpty(decision?.risk_analysis, decision?.riskAnalysis, submissionRisk),
+    evidence_quotes: evidenceQuotes,
+    revision_path: revisionPath,
+    confidence: normalizeConfidence(decision?.confidence ?? primary.confidence),
+    source_agents: sourceAgents,
+    source_issue_ids: sourceIssueIds,
+    source_runs: sourceRuns,
+    adjudication_action: firstNonEmpty(decision?.adjudication_action, decision?.adjudicationAction, decision?.action, "keep")
+  };
+}
+
+function mergeIssueWithNonEmptyOverride(base, override) {
+  const result = { ...(base || {}) };
+  for (const [key, value] of Object.entries(override || {})) {
+    if (Array.isArray(value)) {
+      if (value.length) result[key] = value;
+      continue;
+    }
+    if (value && typeof value === "object") {
+      if (Object.keys(value).length) result[key] = value;
+      continue;
+    }
+    if (String(value ?? "").trim()) result[key] = value;
+  }
+  return result;
+}
+
+function compactDecisionRowsFromAdjudicator(adjudicatorJson) {
+  const direct = adjudicatorJson?.final_issue_decisions
+    || adjudicatorJson?.finalIssueDecisions
+    || adjudicatorJson?.issue_decisions
+    || adjudicatorJson?.issueDecisions
+    || [];
+  if (Array.isArray(direct) && direct.length) {
+    return direct
+      .map((decision, index) => ({
+        decision: typeof decision === "string" ? { source_issue_id: decision } : decision || {},
+        index
+      }))
+      .filter((row) => {
+        const action = String(row.decision.action || row.decision.adjudication_action || row.decision.adjudicationAction || "keep").trim();
+        return !["exclude", "excluded"].includes(action);
+      });
+  }
+
+  const grouped = new Map();
+  for (const entry of sourceIssueCoverageEntries(adjudicatorJson)) {
+    const action = String(entry?.action || "").trim();
+    if (action === "excluded") continue;
+    const targetId = firstNonEmpty(entry?.target_issue_id, entry?.targetIssueId, entry?.target_id, entry?.targetId, entry?.final_issue_id, entry?.finalIssueId, entry?.source_issue_id, entry?.sourceIssueId);
+    if (!targetId) continue;
+    const current = grouped.get(targetId) || {
+      decision: {
+        id: targetId,
+        target_issue_id: targetId,
+        action: action === "merged_into" ? "merge" : "keep",
+        source_issue_ids: [],
+        issue: entry?.target_issue_title || entry?.issue || entry?.source_issue_title || "",
+        severity: entry?.target_severity || entry?.severity || entry?.source_severity || "",
+        category: entry?.target_stage || entry?.category || entry?.source_stage || "",
+        explanation: entry?.reason || ""
+      },
+      index: grouped.size
+    };
+    current.decision.source_issue_ids.push(...coverageEntrySourceRefs(entry));
+    grouped.set(targetId, current);
+  }
+  return [...grouped.values()];
+}
+
+function sourcesForRefs(refs, descriptors, lookup) {
+  const seen = new Set();
+  const resolved = [];
+  for (const ref of refs) {
+    const descriptor = resolveSourceIssueDescriptor(ref, descriptors, lookup);
+    if (!descriptor) continue;
+    const key = descriptor.key;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    resolved.push(descriptor);
+  }
+  return resolved;
+}
+
+function sourcesForAdjudicatorIssue(issue, descriptors, lookup, coverage) {
+  const refs = uniqueText([
+    issue?.source_issue_ids || issue?.sourceIssueIds,
+    issue?.source_ids || issue?.sourceIds,
+    issue?.source_issue_id || issue?.sourceIssueId
+  ]);
+  const direct = sourcesForRefs(refs, descriptors, lookup);
+  if (direct.length) return direct;
+  const issueId = firstNonEmpty(issue?.id, issue?.issue_id, issue?.issueId, issue?.target_issue_id, issue?.targetIssueId);
+  if (!issueId) return [];
+  const coverageRefs = coverage
+    .filter((entry) => firstNonEmpty(entry?.target_issue_id, entry?.targetIssueId, entry?.target_id, entry?.targetId, entry?.final_issue_id, entry?.finalIssueId) === issueId)
+    .flatMap(coverageEntrySourceRefs);
+  return sourcesForRefs(coverageRefs, descriptors, lookup);
+}
+
+function materializeAdjudicatorJson(adjudicatorJson, stageOutputs) {
+  if (!adjudicatorJson || typeof adjudicatorJson !== "object" || Array.isArray(adjudicatorJson)) return adjudicatorJson;
+  const sourceDescriptors = collectSourceIssueDescriptorsFromStageOutputs(stageOutputs);
+  if (!sourceDescriptors.length) return adjudicatorJson;
+  const lookup = buildSourceIssueLookup(sourceDescriptors);
+  const coverage = sourceIssueCoverageEntries(adjudicatorJson);
+  const result = { ...adjudicatorJson };
+  const existingIssues = Array.isArray(result.final_issue_list) ? result.final_issue_list : [];
+  const decisionRows = compactDecisionRowsFromAdjudicator(result);
+  const useCompactRows = !existingIssues.length || (decisionRows.length && existingIssues.length < decisionRows.length);
+
+  if (!useCompactRows) {
+    result.final_issue_list = existingIssues.map((issue, index) => {
+      const sources = sourcesForAdjudicatorIssue(issue, sourceDescriptors, lookup, coverage);
+      if (!sources.length) return issue;
+      return mergeIssueWithNonEmptyOverride(
+        materializeIssueFromSources(issue, sources, index),
+        {
+          ...issue,
+          id: firstNonEmpty(issue.id, issue.issue_id, issue.issueId, `JR-${String(index + 1).padStart(3, "0")}`)
+        }
+      );
+    });
+  } else {
+    result.final_issue_list = decisionRows
+      .map((row, index) => {
+        const refs = decisionSourceRefs(row.decision);
+        const sources = sourcesForRefs(refs, sourceDescriptors, lookup);
+        if (!sources.length) return null;
+        return materializeIssueFromSources(row.decision, sources, index);
+      })
+      .filter(Boolean);
+  }
+
+  const issueLookup = buildIssueLookup(result.final_issue_list);
+  const priorityIds = normalizeStringArray(result.priority_issue_ids || result.priorityIssueIds || result.priority_action_ids || result.priorityActionIds);
+  if (priorityIds.length) {
+    result.priority_actions = normalizeResolvedIssueList(priorityIds, issueLookup);
+  } else if (Array.isArray(result.priority_actions) && result.priority_actions.length) {
+    result.priority_actions = normalizeResolvedIssueList(result.priority_actions, issueLookup);
+  } else if (result.final_issue_list.length) {
+    result.priority_actions = result.final_issue_list.filter((issue) => ["P0", "P1"].includes(normalizeSeverity(issue.severity))).slice(0, 10);
+  }
+
+  result.severity_counts = { ...countSeverities(result.final_issue_list), total: result.final_issue_list.length };
+  result.issue_distribution = countIssuesByDimension(result.final_issue_list.map((issue) => normalizePdfIssue(issue, issue.category, issue.severity)));
+  result.materialized_from_compact = useCompactRows && result.final_issue_list.length > 0;
+  return result;
+}
+
+function customerReportIssueFromAdjudicator(issue, override = {}) {
+  const merged = { ...(issue || {}), ...(override || {}) };
+  const normalized = normalizePdfIssue(merged, issue?.category || override?.category, issue?.severity || override?.severity);
+  return {
+    id: normalized.id,
+    severity: normalized.severity,
+    category: normalized.category,
+    primary_dimension: normalized.dimensionTitle,
+    issue: normalized.issue,
+    location: normalized.location,
+    explanation: normalized.evidence,
+    recommendation: normalized.recommendation,
+    issue_narrative: normalized.issue_narrative,
+    submission_risk: normalized.risk,
+    evidence_quotes: normalized.evidence_quotes,
+    revision_path: normalized.revision_path,
+    confidence: normalized.confidence
+  };
+}
+
+function materializeFinalJson(finalJson, adjudicatorJson) {
+  if (!finalJson || typeof finalJson !== "object" || Array.isArray(finalJson)) return finalJson;
+  const adjudicatorIssues = Array.isArray(adjudicatorJson?.final_issue_list) ? adjudicatorJson.final_issue_list : [];
+  if (!adjudicatorIssues.length) return finalJson;
+
+  const reportContent = finalJson.report_content && typeof finalJson.report_content === "object" && !Array.isArray(finalJson.report_content)
+    ? { ...finalJson.report_content }
+    : {};
+  const adjudicatorLookup = buildIssueLookup(adjudicatorIssues);
+  const existing = normalizeResolvedIssueList(reportContent.final_issue_list, adjudicatorLookup);
+  const shouldReplaceFinalIssues = existing.length < adjudicatorIssues.length;
+  const existingById = new Map(existing.map((issue) => [issue.id, issue]));
+  const finalIssueList = shouldReplaceFinalIssues
+    ? adjudicatorIssues.map((issue) => customerReportIssueFromAdjudicator(issue, existingById.get(issue.id)))
+    : existing.map((issue) => customerReportIssueFromAdjudicator(adjudicatorLookup.get(issue.id) || issue, issue));
+
+  const finalIssueLookup = buildIssueLookup(finalIssueList);
+  const priorityIds = normalizeStringArray(reportContent.priority_issue_ids || reportContent.priorityIssueIds || reportContent.priority_action_ids || reportContent.priorityActionIds || finalJson.priority_issue_ids || finalJson.priorityIssueIds);
+  let priorityActions = [];
+  if (priorityIds.length) {
+    priorityActions = normalizeResolvedIssueList(priorityIds, finalIssueLookup);
+  } else {
+    priorityActions = normalizeResolvedIssueList(reportContent.priority_actions, finalIssueLookup);
+  }
+  if (!priorityActions.length) {
+    const adjudicatorPriorityIds = normalizeStringArray(adjudicatorJson.priority_issue_ids || adjudicatorJson.priorityIssueIds || []);
+    priorityActions = adjudicatorPriorityIds.length
+      ? normalizeResolvedIssueList(adjudicatorPriorityIds, finalIssueLookup)
+      : normalizeResolvedIssueList(adjudicatorJson.priority_actions, finalIssueLookup);
+  }
+  priorityActions = completePriorityIssues(priorityActions, finalIssueList).map((issue) => customerReportIssueFromAdjudicator(issue));
+
+  finalJson.report_content = {
+    ...reportContent,
+    source: reportContent.source || "adjudicator_review",
+    submission_recommendation: reportContent.submission_recommendation || adjudicatorJson.overall_judgment?.submission_recommendation || "",
+    risk_level: reportContent.risk_level || adjudicatorJson.overall_judgment?.risk_level || "",
+    revision_workload: reportContent.revision_workload || adjudicatorJson.overall_judgment?.revision_workload || "",
+    severity_counts: { ...countSeverities(finalIssueList), total: finalIssueList.length },
+    issue_distribution: countIssuesByDimension(finalIssueList),
+    dimension_diagnosis: reportContent.dimension_diagnosis || adjudicatorJson.dimension_diagnosis || {},
+    manuscript_strengths: reportContent.manuscript_strengths || adjudicatorJson.manuscript_strengths || [],
+    major_weaknesses: reportContent.major_weaknesses || adjudicatorJson.major_weaknesses || [],
+    priority_actions: priorityActions,
+    final_issue_list: finalIssueList
+  };
+  return finalJson;
+}
+
+function sourceIssueCoverageEntries(adjudicatorJson) {
+  const raw = adjudicatorJson?.source_issue_coverage || adjudicatorJson?.sourceIssueCoverage || adjudicatorJson?.source_coverage || [];
+  return Array.isArray(raw) ? raw : [];
+}
+
+function coverageEntryMatchesDescriptor(entry, descriptor) {
+  if (!entry || typeof entry !== "object") return false;
+  const stage = String(entry.source_stage || entry.stage || entry.category || "").trim();
+  const ids = [
+    entry.source_issue_key,
+    entry.source_issue_id,
+    entry.sourceIssueId,
+    entry.issue_id,
+    entry.id,
+    ...(Array.isArray(entry.source_issue_ids) ? entry.source_issue_ids : []),
+    ...(Array.isArray(entry.sourceIssueIds) ? entry.sourceIssueIds : [])
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const titles = [entry.source_issue_title, entry.issue, entry.title, entry.problem]
+    .map((value) => normalizedCoverageText(value))
+    .filter(Boolean);
+  const descriptorCode = descriptor.code.toUpperCase();
+  const descriptorKey = descriptor.key.toUpperCase();
+  const stageText = normalizedCoverageText(stage);
+  const descriptorStageText = normalizedCoverageText(descriptor.stage);
+  const descriptorTitleText = normalizedCoverageText(stageTitleForKey(descriptor.stage));
+  const stageMatches = !stage
+    || stage === descriptor.stage
+    || stageText === descriptorStageText
+    || (stageText && descriptorTitleText && (stageText.includes(descriptorTitleText) || descriptorTitleText.includes(stageText)));
+  const idMatches = ids.some((value) => {
+    const upper = value.toUpperCase();
+    return upper === descriptorCode || upper === descriptorKey || upper.includes(descriptorCode) || upper.includes(descriptorKey);
+  });
+  if (stageMatches && idMatches) return true;
+  if (stageMatches && descriptor.normalizedTitle && titles.some((title) => title.includes(descriptor.normalizedTitle) || descriptor.normalizedTitle.includes(title))) {
+    return true;
+  }
+  return false;
+}
+
+function calculateAdjudicatorRetention(sourceIssueCount, adjudicatorIssueCount) {
+  const baselineIssueCount = Math.max(0, Math.round(finiteNumber(sourceIssueCount, 0)));
+  const finalIssueCount = Math.max(0, Math.round(finiteNumber(adjudicatorIssueCount, 0)));
+  const minRequiredIssueCount = baselineIssueCount >= FIDELITY_RETENTION_MIN_SOURCE_COUNT
+    ? Math.ceil(baselineIssueCount * FIDELITY_MIN_ADJUDICATOR_RETENTION_RATE)
+    : 0;
+  const retentionRate = baselineIssueCount ? finalIssueCount / baselineIssueCount : 1;
+  return {
+    baselineIssueCount,
+    adjudicatorIssueCount: finalIssueCount,
+    compressedIssueCount: Math.max(0, baselineIssueCount - finalIssueCount),
+    retentionRate,
+    retentionPercent: Number((retentionRate * 100).toFixed(1)),
+    minRequiredIssueCount,
+    thresholdPercent: Number((FIDELITY_MIN_ADJUDICATOR_RETENTION_RATE * 100).toFixed(0)),
+    enforced: baselineIssueCount >= FIDELITY_RETENTION_MIN_SOURCE_COUNT,
+    passes: minRequiredIssueCount === 0 || finalIssueCount >= minRequiredIssueCount
+  };
+}
+
+function validateFidelityPackage(parsedPackage) {
+  const errors = [];
+  const warnings = [];
+  if (!parsedPackage || parsedPackage.mode !== "v2.1") {
+    return { errors, warnings, sourceIssueCount: 0, coverageCount: 0, adjudicatorIssueCount: 0, finalIssueCount: 0, retention: calculateAdjudicatorRetention(0, 0) };
+  }
+
+  const sourceIssues = collectSourceIssueDescriptorsFromStageOutputs(parsedPackage.stageOutputs);
+  const adjudicatorJson = parsedPackage.adjudicatorJson;
+  const finalJson = parsedPackage.finalJson || {};
+  const reportContent = finalJson.report_content || {};
+  const adjudicatorIssues = Array.isArray(adjudicatorJson?.final_issue_list) ? adjudicatorJson.final_issue_list : [];
+  const finalIssues = Array.isArray(reportContent.final_issue_list) ? reportContent.final_issue_list : [];
+  const coverage = sourceIssueCoverageEntries(adjudicatorJson);
+  const retention = calculateAdjudicatorRetention(sourceIssues.length, adjudicatorIssues.length);
+
+  if (sourceIssues.length && adjudicatorJson) {
+    if (!coverage.length) {
+      errors.push(`裁决者缺少 source_issue_coverage，无法确认 ${sourceIssues.length} 条 Agent 合并问题是否被逐条保留、合并或排除。`);
+    } else {
+      const missing = sourceIssues.filter((descriptor) => !coverage.some((entry) => coverageEntryMatchesDescriptor(entry, descriptor)));
+      if (missing.length) {
+        errors.push(`source_issue_coverage 未覆盖 ${missing.length}/${sourceIssues.length} 条来源问题：${missing.slice(0, 8).map((item) => item.key).join("、")}${missing.length > 8 ? " 等" : ""}。`);
+      }
+      const badActions = coverage.filter((entry) => {
+        const action = String(entry?.action || "").trim();
+        return !["kept_as", "merged_into", "excluded"].includes(action);
+      });
+      if (badActions.length) {
+        errors.push(`source_issue_coverage 中有 ${badActions.length} 条 action 非法，必须是 kept_as、merged_into 或 excluded。`);
+      }
+      const weakExcluded = coverage.filter((entry) => {
+        const action = String(entry?.action || "").trim();
+        const severity = normalizeSeverity(entry?.source_severity || entry?.severity || "P2");
+        const reason = String(entry?.reason || entry?.exclusion_reason || "").trim();
+        return action === "excluded" && ["P0", "P1"].includes(severity) && reason.length < 12;
+      });
+      if (weakExcluded.length) {
+        errors.push(`source_issue_coverage 中有 ${weakExcluded.length} 条 P0/P1 排除记录缺少充分理由。`);
+      }
+    }
+  } else if (sourceIssues.length && !adjudicatorJson) {
+    warnings.push("当前整包缺少 adjudicator_review JSON，无法执行裁决者覆盖率校验。");
+  }
+
+  if (adjudicatorJson && retention.enforced && !retention.passes) {
+    errors.push(
+      `裁决者疑似过度压缩：候选项 ${retention.baselineIssueCount} 项，裁决后 ${retention.adjudicatorIssueCount} 项，保留率 ${retention.retentionPercent}%，低于 ${retention.thresholdPercent}% 门槛；${retention.baselineIssueCount} 项候选至少应保留 ${retention.minRequiredIssueCount} 项，当前仅 ${retention.adjudicatorIssueCount} 项。请回网页端恢复被过度合并的问题或逐项重裁。`
+    );
+  }
+
+  if (adjudicatorIssues.length && finalIssues.length < adjudicatorIssues.length) {
+    errors.push(`终稿 final_issue_list 数量少于裁决者 final_issue_list：${finalIssues.length}/${adjudicatorIssues.length}，疑似终稿阶段二次压缩问题池。`);
+  }
+  if (adjudicatorIssues.length && !finalIssues.length) {
+    errors.push("终稿 report_content.final_issue_list 为空，无法生成客户版完整问题清单。");
+  }
+
+  const internalTerms = scanCustomerFacingInternalTerms(finalJson);
+  if (internalTerms.length) {
+    errors.push(`客户版终稿字段包含内部调试词：${internalTerms.slice(0, 8).join("、")}。请回网页端修复 final_adjudication，或使用紧凑终稿协议只输出客户报告层字段。`);
+  }
+
+  return {
+    errors,
+    warnings,
+    sourceIssueCount: sourceIssues.length,
+    coverageCount: coverage.length,
+    adjudicatorIssueCount: adjudicatorIssues.length,
+    finalIssueCount: finalIssues.length,
+    retention
+  };
+}
+
+function scanCustomerFacingInternalTerms(finalJson = {}) {
+  const reportContent = finalJson.report_content || {};
+  const customerValues = [
+    finalJson.summary,
+    finalJson.overall_conclusion,
+    finalJson.must_fix,
+    finalJson.suggested_fix,
+    finalJson.text_and_figure_comments,
+    finalJson.compliance_risk,
+    finalJson.pre_submission_checklist,
+    finalJson.final_review_text,
+    reportContent.submission_recommendation,
+    reportContent.risk_level,
+    reportContent.revision_workload,
+    reportContent.dimension_diagnosis,
+    reportContent.manuscript_strengths,
+    reportContent.major_weaknesses,
+    reportContent.artifact_completion_summary,
+    reportContent.report_sections
+  ];
+  const text = JSON.stringify(customerValues, (_key, value) => {
+    if (typeof value === "function") return undefined;
+    return value;
+  });
+  const terms = [
+    "source_runs",
+    "source_issue_ids",
+    "runner_metadata",
+    "artifact_manifest",
+    "image_sequence",
+    "extracted_path",
+    "review_status",
+    "report_text",
+    "prompt_id",
+    "token",
+    "latency"
+  ];
+  return terms.filter((term) => new RegExp(`\\b${escapeRegExp(term)}\\b`, "i").test(text));
+}
+
+function shouldEnforceFidelityValidation(parsedPackage) {
+  const metadata = parsedPackage?.runnerMetadata || {};
+  if (sourceIssueCoverageEntries(parsedPackage?.adjudicatorJson).length) return true;
+  const values = [
+    metadata.fidelity_contract_version,
+    metadata.fidelityContractVersion,
+    metadata.fidelity_validation_mode,
+    metadata.fidelityValidationMode,
+    metadata.prompt_adapter_version,
+    metadata.promptAdapterVersion
+  ].map((value) => String(value || ""));
+  return values.some((value) => /coverage|strict|runtime-adapter\.v[5-9]/i.test(value));
 }
 
 function escapeRegExp(value) {
@@ -2862,7 +3516,7 @@ function formatItem(item) {
   push("问题", pick("issue", "title", "problem", "name", "action", "item"));
   push("精确定位", pick("location", "position", "precise_location", "preciseLocation"));
   push("问题说明", pick("explanation", "evidence", "detail", "summary", "reason"));
-  push("修改建议", pick("recommendation", "suggestion", "fix", "recommended_action", "recommendedAction"));
+  push("修改建议", pick("recommendation", "suggestion", "fix", "recommended_action", "recommendedAction", "action"));
   if (parts.length) return parts.join("；");
   return customerFacingText(toPlainReportText(item));
 }
@@ -2872,6 +3526,94 @@ function renderList(items) {
     return [paragraph("无")];
   }
   return items.flatMap((item, index) => renderTextBlock(`${index + 1}. ${formatItem(item)}`));
+}
+
+function normalizeIssueTitleKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s"'“”‘’`.,，。；;:：、()[\]{}<>《》【】!?！？\-_/\\]/g, "")
+    .trim();
+}
+
+function issueTitleCandidates(item) {
+  if (typeof item === "string") return [item];
+  if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+  return [item.issue, item.title, item.problem, item.name].filter((value) => value !== undefined && value !== null && String(value).trim());
+}
+
+function buildIssueTitleLookup(issues) {
+  const lookup = new Map();
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    for (const candidate of issueTitleCandidates(issue)) {
+      const key = normalizeIssueTitleKey(candidate);
+      if (key && !lookup.has(key)) lookup.set(key, issue);
+    }
+  }
+  return lookup;
+}
+
+function resolveIssueFromDetailedPool(item, lookup) {
+  for (const candidate of issueTitleCandidates(item)) {
+    const key = normalizeIssueTitleKey(candidate);
+    if (key && lookup.has(key)) return lookup.get(key);
+  }
+  return item;
+}
+
+function resolveDetailedDocxIssueList(items, lookup, fallbackItems = []) {
+  const values = Array.isArray(items) ? items : [];
+  if (!values.length) return fallbackItems;
+  return values.map((item) => resolveIssueFromDetailedPool(item, lookup));
+}
+
+function issueTopicText(issue) {
+  return [
+    issue?.category,
+    issue?.dimensionKey,
+    issue?.dimensionTitle,
+    issue?.primary_dimension,
+    issue?.dimension
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function isTextFigureDocxIssue(issue) {
+  const text = issueTopicText(issue);
+  return /figure_table_visual_audit|numerical_audit|图表|图片|figure|table|visual|数值|一致/.test(text);
+}
+
+function isComplianceDocxIssue(issue) {
+  const text = issueTopicText(issue);
+  return /submission_safety_expression|投稿|合规|表达|安全|submission|safety/.test(text);
+}
+
+function buildDocxIssueSections(task, finalJson) {
+  const detailedIssues = collectFinalContentIssues(task);
+  const lookup = buildIssueTitleLookup(detailedIssues);
+  return {
+    mustFix: resolveDetailedDocxIssueList(
+      finalJson.must_fix,
+      lookup,
+      detailedIssues.filter((issue) => ["P0", "P1"].includes(normalizeSeverity(issue.severity)))
+    ),
+    suggestedFix: resolveDetailedDocxIssueList(
+      finalJson.suggested_fix,
+      lookup,
+      detailedIssues.filter((issue) => ["P2", "P3"].includes(normalizeSeverity(issue.severity)))
+    ),
+    textAndFigureComments: resolveDetailedDocxIssueList(
+      finalJson.text_and_figure_comments,
+      lookup,
+      detailedIssues.filter(isTextFigureDocxIssue)
+    ),
+    complianceRisk: resolveDetailedDocxIssueList(
+      finalJson.compliance_risk,
+      lookup,
+      detailedIssues.filter(isComplianceDocxIssue)
+    )
+  };
 }
 
 function renderScoreSummary(scoreSummary) {
@@ -3035,6 +3777,7 @@ function pushRunnerMetadataLines(lines, task, options = {}) {
   lines.push(`runner：${meta.runner || meta.mode || "-"}`);
   lines.push(`target_model：${meta.target_model || meta.model || "-"}`);
   lines.push(`target_url：${meta.target_url || meta.web_url || "-"}`);
+  lines.push(`authorization_mode：${meta.authorization_mode || meta.authorizationMode || "-"}`);
   lines.push(`started_at：${meta.started_at || meta.startedAt || "-"}`);
   lines.push(`completed_at：${meta.completed_at || meta.completedAt || "-"}`);
   if (meta.notes) lines.push(`notes：${Array.isArray(meta.notes) ? meta.notes.join("；") : meta.notes}`);
@@ -3051,7 +3794,7 @@ function pushRunnerMetadataLines(lines, task, options = {}) {
     lines.push("网页会话记录：");
     for (const [index, item] of conversations.entries()) {
       const value = typeof item === "object" && item ? item : { note: String(item || "") };
-      lines.push(`- ${index + 1}. ${value.stage || "-"}｜${value.run || "-"}｜${value.conversation_id || value.url || "-"}｜${value.status || "-"}`);
+      lines.push(`- ${index + 1}. ${value.stage || "-"}｜${value.run || "-"}｜${value.conversation_id || value.conversation_url || value.url || "-"}｜${value.status || "-"}`);
       if (value.format_fix_count !== undefined) lines.push(`  格式修复次数：${value.format_fix_count}`);
       if (value.error) lines.push(`  错误：${value.error}`);
     }
@@ -3062,6 +3805,14 @@ function pushRunnerMetadataLines(lines, task, options = {}) {
     for (const [index, item] of retries.entries()) {
       const value = typeof item === "object" && item ? item : { note: String(item || "") };
       lines.push(`- ${index + 1}. ${value.stage || "-"}｜${value.reason || value.error || "-"}｜${value.action || "-"}`);
+    }
+  }
+  const pauseEvents = Array.isArray(meta.pause_events) ? meta.pause_events : Array.isArray(meta.pauseEvents) ? meta.pauseEvents : [];
+  if (pauseEvents.length) {
+    lines.push("暂停询问记录：");
+    for (const [index, item] of pauseEvents.entries()) {
+      const value = typeof item === "object" && item ? item : { note: String(item || "") };
+      lines.push(`- ${index + 1}. ${value.stage || "-"}｜${value.reason || value.note || "-"}｜${value.resolution || value.action || "-"}`);
     }
   }
   lines.push("");
@@ -3090,6 +3841,7 @@ function pushIssueLines(lines, issues, options = {}) {
     }
     lines.push(`   位置：${issue.location || "未标明"}`);
     if (issue.evidence_quotes?.length) lines.push(`   原文片段：${issue.evidence_quotes.join("；")}`);
+    if (issue.submission_risk) lines.push(`   投稿风险：${issue.submission_risk}`);
     if (issue.risk_analysis) lines.push(`   风险机制：${issue.risk_analysis}`);
     lines.push(`   证据：${issue.evidence || "未提供"}`);
     lines.push(`   建议：${issue.recommendation || "未提供"}`);
@@ -3293,6 +4045,7 @@ function pushPdfIssueReadableLines(lines, title, issues, options = {}) {
     }
     lines.push(`   位置：${issue.location || "未标明"}`);
     if (issue.evidence_quotes?.length) lines.push(`   原文片段：${issue.evidence_quotes.join("；")}`);
+    if (issue.risk) lines.push(`   投稿风险：${issue.risk}`);
     if (issue.risk_analysis) lines.push(`   风险机制：${issue.risk_analysis}`);
     lines.push(`   依据/说明：${issue.evidence || "未提供"}`);
     lines.push(`   建议：${issue.recommendation || "未提供"}`);
@@ -3387,6 +4140,32 @@ function pushAdjudicatorOutputLines(lines, task) {
     if (judgment.revision_workload_reason) lines.push(`工作量依据：${judgment.revision_workload_reason}`);
   }
   lines.push("");
+  const sourceIssues = collectSourceIssueDescriptorsFromStageOutputs(task.stageOutputs);
+  const coverage = sourceIssueCoverageEntries(adjudicatorJson);
+  const adjudicatorIssues = Array.isArray(adjudicatorJson.final_issue_list) ? adjudicatorJson.final_issue_list : [];
+  const retention = calculateAdjudicatorRetention(sourceIssues.length, adjudicatorIssues.length);
+  if (sourceIssues.length) {
+    lines.push(`候选项基线压缩统计：候选项 ${retention.baselineIssueCount} 项；裁决后 ${retention.adjudicatorIssueCount} 项；压缩 ${retention.compressedIssueCount} 项；保留率 ${retention.retentionPercent}%。`);
+    if (retention.enforced) {
+      lines.push(`最低保真门槛：至少保留 ${retention.thresholdPercent}%（${retention.minRequiredIssueCount} 项）。${retention.passes ? "当前通过。" : "当前低于门槛，疑似过度压缩；新版导入会要求重跑裁决者。"}`);
+    } else {
+      lines.push(`最低保真门槛：候选项少于 ${FIDELITY_RETENTION_MIN_SOURCE_COUNT} 项，不启用 ${retention.thresholdPercent}% 硬阈值。`);
+    }
+    lines.push("");
+  }
+  if (sourceIssues.length && !coverage.length) {
+    lines.push(`保真校验提示：当前裁决者输出缺少 source_issue_coverage，无法确认 ${sourceIssues.length} 条 Agent 合并问题是否被逐条处理，也缺少完整压缩率保真校验记录。旧任务可继续兼容，但建议使用新版裁决者提示词重跑。`);
+    lines.push("");
+  } else if (sourceIssues.length) {
+    const missing = sourceIssues.filter((descriptor) => !coverage.some((entry) => coverageEntryMatchesDescriptor(entry, descriptor)));
+    lines.push(`保真覆盖表：${coverage.length} 条记录；来源问题 ${sourceIssues.length} 条；未覆盖 ${missing.length} 条。`);
+    if (missing.length) lines.push(`未覆盖来源：${missing.slice(0, 12).map((item) => item.key).join("、")}${missing.length > 12 ? " 等" : ""}`);
+    lines.push("");
+  }
+  if (Array.isArray(adjudicatorJson.final_issue_decisions)) {
+    lines.push(`紧凑裁定表 final_issue_decisions：${adjudicatorJson.final_issue_decisions.length} 条。${adjudicatorJson.materialized_from_compact ? "后台已据此物化完整问题池。" : "当前任务使用完整问题池或旧版裁决输出。"}`);
+    lines.push("");
+  }
   pushPdfIssueReadableLines(lines, "优先处理问题 priority_actions", adjudicatorJson.priority_actions, { emptyText: "未记录优先处理问题。" });
   lines.push("");
   pushPdfIssueReadableLines(lines, "裁决后完整问题池 final_issue_list", adjudicatorJson.final_issue_list, { emptyText: "未记录裁决后完整问题池。" });
@@ -3495,6 +4274,31 @@ function htmlEscape(value) {
 
 function customerFacingText(value) {
   return sanitizeXmlText(value ?? "")
+    .replace(/\brunner_metadata\b/gi, "运行记录")
+    .replace(/\bconsistency_metrics\b/gi, "复核摘要")
+    .replace(/\bsource_runs\b/gi, "")
+    .replace(/\bsource_issue_ids\b/gi, "")
+    .replace(/\bsource_issue_id\b/gi, "")
+    .replace(/\bsource_issue_coverage\b/gi, "")
+    .replace(/\bsource_agents\b/gi, "")
+    .replace(/\badjudication_action\b/gi, "")
+    .replace(/\btarget_model\b/gi, "")
+    .replace(/\bconversation_id\b/gi, "")
+    .replace(/\bfidelity_[A-Za-z0-9_]+\b/gi, "")
+    .replace(/\bweb-browser\b/gi, "")
+    .replace(/\bcodex-skill\b/gi, "")
+    .replace(/\bmanual-skill-runner\b/gi, "")
+    .replace(/\bprompt(?:_snapshot|_hash|_id|_version)?\b/gi, "")
+    .replace(/\btoken(?:s|_input|_output)?\b/gi, "")
+    .replace(/\blatency(?:Ms)?\b/gi, "")
+    .replace(/\brun_[12]\b/gi, "")
+    .replace(/\bJSON\b/gi, "")
+    .replace(/Python\s*文件状态检测/g, "文件材料检测")
+    .replace(/Python/g, "文件检测")
+    .replace(/六\s*Agent/g, "六维审查")
+    .replace(/Agent/g, "审查模块")
+    .replace(/adjudicator_review/gi, "")
+    .replace(/final_adjudication/gi, "")
     .replace(/artifact_manifest(?:\s+JSON)?/gi, "材料检测提示")
     .replace(/\bcounts\.[A-Za-z0-9_.-]+\s*=\s*[\w.-]+/g, "材料检测提示")
     .replace(/\bquality_flags\b/gi, "材料质量提示")
@@ -3507,6 +4311,8 @@ function customerFacingText(value) {
     .replace(/材料检测提示\s*；\s*材料检测提示/g, "材料检测提示")
     .replace(/对应图片(?:\s*\/\s*对应图片)+/g, "对应图片")
     .replace(/\s*；\s*；\s*/g, "；")
+    .replace(/[：:]\s*[；,，。]/g, "：")
+    .replace(/\s{2,}/g, " ")
     .trim();
 }
 
@@ -3532,8 +4338,9 @@ function toPlainReportText(value) {
       if (value[key]) parts.push(String(value[key]).trim());
     }
     if (parts.length) return parts.join("；");
-    return Object.entries(value)
-      .map(([key, item]) => `${key}：${typeof item === "object" ? JSON.stringify(item) : item}`)
+    return Object.values(value)
+      .map((item) => (typeof item === "object" ? toPlainReportText(item) : String(item ?? "").trim()))
+      .filter(Boolean)
       .join("；");
   }
   return String(value).trim();
@@ -3573,6 +4380,7 @@ function normalizePdfIssue(item, fallbackCategory = "general", fallbackSeverity 
     evidence: String(value.evidence || value.explanation || value.detail || value.reason || "需人工复核").trim(),
     recommendation: String(value.recommendation || value.suggestion || value.fix || "建议按终稿输出意见进行低成本修订").trim(),
     issue_narrative: String(value.issue_narrative || value.issueNarrative || value.narrative || "").trim(),
+    risk: String(value.risk || value.submission_risk || value.submissionRisk || value.risk_analysis || value.riskAnalysis || "").trim(),
     risk_analysis: String(value.risk_analysis || value.riskAnalysis || "").trim(),
     evidence_quotes: normalizeStringArray(value.evidence_quotes || value.evidenceQuotes || value.quotes),
     revision_path: normalizeStringArray(value.revision_path || value.revisionPath || value.revision_steps || value.revisionSteps),
@@ -3672,17 +4480,17 @@ function collectFinalContentIssues(task) {
   const content = finalJson.report_content || {};
   const adjudicatorJson = getAdjudicatorJson(task) || {};
   const lookup = buildIssueLookup(
-    adjudicatorJson.final_issue_list,
-    adjudicatorJson.priority_actions,
     content.final_issue_list,
     content.locked_must_fix,
     content.priority_actions,
     content.core_issues,
+    adjudicatorJson.final_issue_list,
+    adjudicatorJson.priority_actions,
     finalJson.locked_must_fix
   );
   const candidates = [
-    adjudicatorJson.final_issue_list,
     content.final_issue_list,
+    adjudicatorJson.final_issue_list,
     content.locked_must_fix,
     content.priority_actions,
     content.core_issues,
@@ -3750,6 +4558,162 @@ function collectPriorityIssues(task, reportIssues) {
     if (issues.length) return completePriorityIssues(issues, reportIssues);
   }
   return completePriorityIssues(reportIssues.filter((issue) => ["P0", "P1"].includes(issue.severity)), reportIssues);
+}
+
+function isThinFinalReviewText(text, priorityIssues = [], reportIssues = []) {
+  const value = String(text || "").trim();
+  if (!value) return reportIssues.length > 0 || priorityIssues.length > 0;
+  const lower = value.toLowerCase();
+  if (
+    /report_content|priority_actions|final_?issue_?list|结构化字段/.test(lower) ||
+    /具体见|详见|参见|见\s*report_content|见\s*final/i.test(value)
+  ) {
+    return true;
+  }
+  const expandedMarkers = (value.match(/问题标题|定位位置|为什么是问题|投稿风险|低成本处理建议|问题\s*\d+\s*[｜|]/g) || []).length;
+  if (reportIssues.length >= 10 && value.length < 3000 && expandedMarkers < 5) return true;
+  if (reportIssues.length >= 5 && value.length < 1800 && expandedMarkers < 3) return true;
+  return false;
+}
+
+function issueSubmissionRiskText(issue) {
+  const explicit = customerFacingText(issue.risk || issue.submission_risk || issue.submissionRisk || issue.risk_analysis || "");
+  if (explicit) return explicit;
+  if (issue.severity === "P0") {
+    return "该问题可能构成投稿前阻断级风险，若不处理，容易使编辑或外审认为稿件核心结论、合规基础或材料完整性尚不具备直接投稿条件。";
+  }
+  if (issue.severity === "P1") {
+    return "该问题会明显影响编辑或外审对核心证据链、方法透明度或投稿材料可信度的判断，投稿前应优先修正。";
+  }
+  if (issue.severity === "P2") {
+    return "该问题通常不构成直接阻断，但会削弱论文表达完整性、结果可复核性或审稿说服力，建议在投稿前同步优化。";
+  }
+  return "该问题属于低影响清稿或呈现优化项，处理后有助于提高成稿规范性和阅读体验。";
+}
+
+function issueRevisionAdviceText(issue) {
+  const parts = [];
+  const recommendation = customerFacingText(issue.recommendation || "");
+  if (recommendation) parts.push(recommendation);
+  if (Array.isArray(issue.revision_path) && issue.revision_path.length) {
+    parts.push(issue.revision_path.map(customerFacingText).filter(Boolean).join("；"));
+  }
+  return parts.filter(Boolean).join("；") || "建议按终稿结构化问题清单逐项补充、统一或降调相关内容，并在投稿前复核对应章节。";
+}
+
+function cleanCustomerIssueNarrative(value) {
+  const text = customerFacingText(value || "");
+  if (!text) return "";
+  return text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^问题编号\s*[：:]/.test(line))
+    .filter((line) => !/^问题短标题\s*[：:]/.test(line))
+    .filter((line) => !/^风险等级\s*[：:]/.test(line))
+    .filter((line) => !/^低成本处理(?:方向|建议)?\s*[：:]/.test(line))
+    .filter((line) => !/^修改建议\s*[：:]/.test(line))
+    .filter((line) => !/^投稿风险\s*[：:]/.test(line))
+    .map((line) => line.replace(/^依据\s*[：:]/, "依据：").replace(/^问题及投稿风险\s*[：:]/, ""))
+    .join(" ");
+}
+
+function customerIssueLocationText(issue) {
+  const location = customerFacingText(issue.location || "");
+  const quotes = Array.isArray(issue.evidence_quotes)
+    ? issue.evidence_quotes.map(customerFacingText).filter(Boolean)
+    : [];
+  if (location && !/需人工复核|未提供|不详/.test(location)) return location;
+  if (quotes.length) return `${location || "需人工复核具体位置"}；可检索片段：${quotes.slice(0, 2).join("；")}`;
+  return location || "需人工复核具体位置";
+}
+
+function customerIssueWhyText(issue) {
+  return customerFacingText(issue.explanation || issue.detail || "")
+    || cleanCustomerIssueNarrative(issue.issue_narrative)
+    || customerFacingText(issue.evidence || issue.reason || "需人工复核问题依据。");
+}
+
+function buildCustomerIssueView(issue, index) {
+  return {
+    severity: normalizeSeverity(issue.severity || "P2"),
+    dimensionTitle: customerFacingText(issue.dimensionTitle || issue.primary_dimension || issue.category || "综合问题"),
+    title: customerFacingText(issue.issue || issue.title || `问题 ${index + 1}`),
+    location: customerIssueLocationText(issue),
+    why: customerIssueWhyText(issue),
+    submissionRisk: issueSubmissionRiskText(issue),
+    revisionAdvice: issueRevisionAdviceText(issue)
+  };
+}
+
+function renderExpandedIssueText(issue, index, options = {}) {
+  const prefix = options.prefix || "问题";
+  const view = buildCustomerIssueView(issue, index);
+  return [
+    `${prefix} ${index + 1}｜${view.severity}｜${view.dimensionTitle}`,
+    `问题标题：${view.title}`,
+    `定位位置：${view.location}`,
+    `为什么是问题：${view.why}`,
+    `投稿风险：${view.submissionRisk}`,
+    `低成本处理建议：${view.revisionAdvice}`
+  ].join("\n");
+}
+
+function buildExpandedFinalReviewText(task, priorityIssues, reportIssues) {
+  const finalJson = task.finalJson || {};
+  const reportContent = finalJson.report_content || {};
+  const scoreSummary = normalizeModelScoreSummary(reportContent);
+  const severityCounts = normalizeCountMap(countSeverities(reportIssues), ["P0", "P1", "P2", "P3"]);
+  const strengths = normalizeStringArray(reportContent.manuscript_strengths);
+  const weaknesses = normalizeStringArray(reportContent.major_weaknesses);
+  const checklist = Array.isArray(finalJson.pre_submission_checklist) ? finalJson.pre_submission_checklist : [];
+  const scoreLine = scoreSummary.hasOverallScore
+    ? `总体评分：${scoreSummary.overallScore}/100。${scoreSummary.overallScoreLabel || ""}${scoreSummary.overallScoreRationale ? ` ${scoreSummary.overallScoreRationale}` : ""}`.trim()
+    : "总体评分：未生成模型评分。";
+
+  return [
+    "投稿前预审质控报告与修改意见",
+    "",
+    "一、报告基本信息与总体判断",
+    `文稿名称：${task.originalFilename || "未提供"}`,
+    `当前投稿建议：${reportContent.submission_recommendation || "未在终稿结构化字段中稳定提供"}`,
+    `总体风险判断：${reportContent.risk_level || "未在终稿结构化字段中稳定提供"}`,
+    `预计修订工作量：${reportContent.revision_workload || "未在终稿结构化字段中稳定提供"}`,
+    scoreLine,
+    `问题数量概览：P0 ${severityCounts.P0 || 0} 项；P1 ${severityCounts.P1 || 0} 项；P2 ${severityCounts.P2 || 0} 项；P3 ${severityCounts.P3 || 0} 项；共 ${reportIssues.length} 项。`,
+    "",
+    "二、一页式总览",
+    customerFacingText(finalJson.overall_conclusion || finalJson.summary || "暂无总体结论。"),
+    "",
+    "三、稿件主要优势与主要短板",
+    "稿件主要优势：",
+    strengths.length ? strengths.map((item, index) => `${index + 1}. ${customerFacingText(item)}`).join("\n") : "未在终稿结构化字段中稳定提供。",
+    "稿件主要短板：",
+    weaknesses.length ? weaknesses.map((item, index) => `${index + 1}. ${customerFacingText(item)}`).join("\n") : "主要短板见下方优先处理问题和完整问题清单。",
+    "",
+    "四、优先处理问题",
+    priorityIssues.length
+      ? priorityIssues.map((issue, index) => renderExpandedIssueText(issue, index, { prefix: "优先问题" })).join("\n\n")
+      : "未锁定需要优先处理的问题。",
+    "",
+    "五、完整问题清单",
+    reportIssues.length
+      ? reportIssues.map((issue, index) => renderExpandedIssueText(issue, index, { prefix: "问题" })).join("\n\n")
+      : "暂无结构化完整问题清单。",
+    "",
+    "六、投稿前检查清单",
+    checklist.length ? checklist.map((item, index) => `${index + 1}. ${customerFacingText(toPlainReportText(item))}`).join("\n") : "暂无投稿前检查清单。"
+  ].join("\n");
+}
+
+function ensureExpandedFinalReviewText(task) {
+  if (!task?.finalJson) return false;
+  const reportIssues = collectFinalContentIssues(task).length ? collectFinalContentIssues(task) : collectFallbackFinalIssues(task);
+  if (!reportIssues.length) return false;
+  const priorityIssues = collectPriorityIssues(task, reportIssues);
+  if (!isThinFinalReviewText(task.finalJson.final_review_text, priorityIssues, reportIssues)) return false;
+  task.finalJson.final_review_text = buildExpandedFinalReviewText(task, priorityIssues, reportIssues);
+  return true;
 }
 
 function countSeverities(issues) {
@@ -3879,11 +4843,18 @@ function normalizeModelScoreSummary(reportContent = {}) {
   const raw = reportContent.score_summary && typeof reportContent.score_summary === "object" && !Array.isArray(reportContent.score_summary)
     ? reportContent.score_summary
     : {};
-  const readScore = (value) => {
+  const readScore = (value, options = {}) => {
+    const text = String(value ?? "").trim();
+    const tenPointMatch = text.match(/(\d+(?:\.\d+)?)\s*\/\s*10\b/i);
+    if (tenPointMatch) {
+      return Math.round(clampNumber(Number(tenPointMatch[1]) * 10, 0, 100));
+    }
     const number = Number(value);
-    return Number.isFinite(number) ? Math.round(clampNumber(number, 0, 100)) : null;
+    if (!Number.isFinite(number)) return null;
+    return Math.round(clampNumber(options.scale10 ? number * 10 : number, 0, 100));
   };
-  const overallScore = readScore(raw.overall_score ?? raw.overallScore ?? reportContent.overall_score ?? reportContent.overallScore);
+  const overallScore = readScore(raw.overall_score ?? raw.overallScore ?? reportContent.overall_score ?? reportContent.overallScore)
+    ?? readScore(raw.overall_score_10 ?? raw.overallScore10 ?? raw.overall_score_text ?? reportContent.overall_score_10 ?? reportContent.overallScore10, { scale10: true });
   const rawDimensions = Array.isArray(raw.dimension_scores)
     ? raw.dimension_scores
     : Array.isArray(raw.dimensionScores)
@@ -3901,7 +4872,8 @@ function normalizeModelScoreSummary(reportContent = {}) {
     return {
       key: dimension.key,
       title: String(found.title || found.dimension || found.primary_dimension || dimension.title).trim(),
-      score: readScore(found.score ?? found.value),
+      score: readScore(found.score ?? found.value)
+        ?? readScore(found.score_10 ?? found.score10 ?? found.score_text ?? found.scoreText, { scale10: true }),
       rationale: customerFacingText(found.rationale || found.reason || found.comment || "")
     };
   });
@@ -3913,6 +4885,34 @@ function normalizeModelScoreSummary(reportContent = {}) {
     dimensionScores,
     hasCompleteDimensionScores: dimensionScores.every((item) => item.score !== null)
   };
+}
+
+function normalizeDimensionDiagnosis(reportContent = {}, adjudicatorJson = {}) {
+  const source = reportContent.dimension_diagnosis && typeof reportContent.dimension_diagnosis === "object" && !Array.isArray(reportContent.dimension_diagnosis)
+    ? reportContent.dimension_diagnosis
+    : adjudicatorJson.dimension_diagnosis && typeof adjudicatorJson.dimension_diagnosis === "object" && !Array.isArray(adjudicatorJson.dimension_diagnosis)
+      ? adjudicatorJson.dimension_diagnosis
+      : {};
+  const normalized = {};
+  for (const dimension of PDF_DIMENSIONS) {
+    const value = source[dimension.key] || source[dimension.stage] || source[dimension.title] || "";
+    normalized[dimension.key] = customerFacingText(toPlainReportText(value));
+  }
+  return normalized;
+}
+
+function collectPdfChecklist(finalJson = {}, reportContent = {}) {
+  const candidates = [
+    reportContent.checklist,
+    reportContent.pre_submission_checklist,
+    reportContent.submission_checklist,
+    finalJson.pre_submission_checklist
+  ];
+  for (const value of candidates) {
+    const items = normalizeCustomerTextList(value);
+    if (items.length) return items;
+  }
+  return [];
 }
 
 function deriveRiskLevel(severityCounts, overallScore) {
@@ -3942,6 +4942,11 @@ function buildV22ReportData(task) {
     issueDistribution[dimension.key] = Math.max(0, Math.round(finiteNumber(issueDistributionRaw[dimension.key] ?? issueDistributionRaw[dimension.title], 0)));
   }
   const scoreSummary = normalizeModelScoreSummary(reportContent);
+  const dimensionDiagnosis = normalizeDimensionDiagnosis(reportContent, adjudicatorJson);
+  const moduleScores = scoreSummary.dimensionScores.map((item) => ({
+    ...item,
+    diagnosis: dimensionDiagnosis[item.key] || ""
+  }));
   return {
     title: REPORT_TITLE,
     version: "V2.2 客户版 PDF",
@@ -3958,7 +4963,9 @@ function buildV22ReportData(task) {
     artifactCompletionSummary,
     consistencyMetrics,
     scoreSummary,
-    moduleScores: scoreSummary.dimensionScores,
+    moduleScores,
+    dimensionDiagnosis,
+    checklist: collectPdfChecklist(finalJson, reportContent),
     overallScore: scoreSummary.overallScore,
     riskLevel: reportContent.risk_level || adjudicatorJson.overall_judgment?.risk_level || deriveRiskLevel(severityCounts, scoreSummary.overallScore ?? 0),
     minRevisionAdvice: reportContent.min_revision_advice || finalJson.overall_conclusion || "建议优先处理 P0/P1 必改项，再处理影响表达和完整性的 P2 问题。",
@@ -3973,81 +4980,124 @@ function svgText(value, x, y, options = {}) {
   return `<text x="${x}" y="${y}" text-anchor="${anchor}" font-size="${size}" font-weight="${weight}" fill="${fill}">${htmlEscape(value)}</text>`;
 }
 
+function svgMultilineText(value, x, y, options = {}) {
+  const anchor = options.anchor || "middle";
+  const size = options.size || 12;
+  const weight = options.weight || 500;
+  const fill = options.fill || "#1f2937";
+  const lineHeight = options.lineHeight || size + 3;
+  const lines = String(value ?? "").split(/\n/).filter(Boolean);
+  return `<text x="${x}" y="${y}" text-anchor="${anchor}" font-size="${size}" font-weight="${weight}" fill="${fill}">
+    ${lines.map((line, index) => `<tspan x="${x}" dy="${index === 0 ? 0 : lineHeight}">${htmlEscape(line)}</tspan>`).join("")}
+  </text>`;
+}
+
+function shortDimensionTitle(item) {
+  const key = item?.key || item?.stage || "";
+  const map = {
+    selection_innovation: "选题\n创新",
+    clinical_methods: "临床\n逻辑",
+    statistical_results: "统计\n证据",
+    numerical_audit: "数据\n一致",
+    figure_table_visual_audit: "图表\n呈现",
+    submission_safety_expression: "投稿\n合规"
+  };
+  return map[key] || String(item?.title || "").replace("与", "\n");
+}
+
 function renderRadarSvg(moduleScores) {
   if (!Array.isArray(moduleScores) || moduleScores.some((item) => item.score === null || item.score === undefined)) {
-    return `<div class="note">未生成模型六维评分，请使用新版终稿输出重新生成。</div>`;
+    return `<div class="note">未生成六维评分。</div>`;
   }
-  const width = 440;
-  const height = 360;
-  const centerX = 220;
-  const centerY = 178;
-  const radius = 112;
+  const width = 520;
+  const height = 390;
+  const centerX = 260;
+  const centerY = 194;
+  const radius = 122;
   const angleFor = (index) => -Math.PI / 2 + (Math.PI * 2 * index) / moduleScores.length;
   const point = (score, index) => {
-    const scale = clampNumber(score, 50, 100) / 100;
+    const scale = clampNumber(score, 0, 100) / 100;
     const angle = angleFor(index);
     return [centerX + Math.cos(angle) * radius * scale, centerY + Math.sin(angle) * radius * scale];
   };
   const polygon = moduleScores.map((item, index) => point(item.score, index).map((number) => number.toFixed(1)).join(",")).join(" ");
-  const rings = [60, 70, 80, 90, 100]
+  const rings = [20, 40, 60, 80, 100]
     .map((score) => {
       const points = moduleScores.map((_, index) => point(score, index).map((number) => number.toFixed(1)).join(",")).join(" ");
-      return `<polygon points="${points}" fill="none" stroke="#d8dee8" stroke-width="1" />`;
+      return `<polygon points="${points}" fill="none" stroke="${score === 100 ? "#c7d7ec" : "#e5edf7"}" stroke-width="${score === 100 ? "1.2" : "0.8"}" />`;
     })
     .join("");
   const axes = moduleScores
     .map((item, index) => {
       const [x, y] = point(100, index);
-      const [labelX, labelY] = point(118, index);
-      return `<line x1="${centerX}" y1="${centerY}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#d8dee8" stroke-width="1" />${svgText(item.title, labelX.toFixed(1), labelY.toFixed(1), { size: 11, weight: 600 })}${svgText(item.score, point(108, index)[0].toFixed(1), point(108, index)[1].toFixed(1), { size: 10, fill: "#1d4ed8" })}`;
+      const [labelX, labelY] = point(122, index);
+      const [scoreX, scoreY] = point(108, index);
+      return `<line x1="${centerX}" y1="${centerY}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#d8dee8" stroke-width="0.9" />
+        ${svgMultilineText(shortDimensionTitle(item), labelX.toFixed(1), labelY.toFixed(1), { size: 12, weight: 700, fill: "#17345b", lineHeight: 14 })}
+        ${svgText(item.score, scoreX.toFixed(1), scoreY.toFixed(1), { size: 11, weight: 800, fill: "#1f5cc8" })}`;
     })
     .join("");
   return `<svg class="chart-svg radar-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="六维评分雷达图">
-    <rect x="0" y="0" width="${width}" height="${height}" fill="#ffffff" rx="8" />
+    <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfdff" rx="18" />
     ${rings}
     ${axes}
-    <polygon points="${polygon}" fill="rgba(37, 99, 235, 0.20)" stroke="#1d4ed8" stroke-width="2.5" />
-    <circle cx="${centerX}" cy="${centerY}" r="2.5" fill="#1d4ed8" />
+    <polygon points="${polygon}" fill="rgba(31, 92, 200, 0.16)" stroke="#1f5cc8" stroke-width="3" />
+    ${moduleScores.map((item, index) => {
+      const [x, y] = point(item.score, index);
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#1f5cc8" stroke="#ffffff" stroke-width="2" />`;
+    }).join("")}
+    <circle cx="${centerX}" cy="${centerY}" r="3" fill="#17345b" />
   </svg>`;
 }
 
 function renderBarChartSvg(items, options = {}) {
   const width = options.width || 520;
-  const height = options.height || 260;
-  const margin = { top: 24, right: 22, bottom: 58, left: 42 };
+  const height = options.height || 280;
+  const margin = { top: 28, right: 24, bottom: 66, left: 44 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;
   const maxValue = Math.max(1, ...items.map((item) => finiteNumber(item.value, 0)));
   const barWidth = Math.max(18, chartWidth / items.length - 16);
   const gap = (chartWidth - barWidth * items.length) / Math.max(1, items.length - 1);
+  const gridLines = [0.25, 0.5, 0.75, 1]
+    .map((ratio) => {
+      const y = margin.top + chartHeight - chartHeight * ratio;
+      return `<line x1="${margin.left}" y1="${y.toFixed(1)}" x2="${width - margin.right}" y2="${y.toFixed(1)}" stroke="#e7eef8" stroke-width="1" />`;
+    })
+    .join("");
   const bars = items
     .map((item, index) => {
       const value = finiteNumber(item.value, 0);
       const barHeight = (value / maxValue) * chartHeight;
       const x = margin.left + index * (barWidth + gap);
       const y = margin.top + chartHeight - barHeight;
-      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="4" fill="${item.color || "#2563eb"}" />
-        ${svgText(value, (x + barWidth / 2).toFixed(1), (y - 6).toFixed(1), { size: 12, fill: "#0f172a" })}
-        ${svgText(item.label, (x + barWidth / 2).toFixed(1), height - 28, { size: 10, fill: "#334155" })}`;
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(2, barHeight).toFixed(1)}" rx="8" fill="${item.color || "#2563eb"}" />
+        ${svgText(value, (x + barWidth / 2).toFixed(1), (y - 8).toFixed(1), { size: 13, weight: 800, fill: "#17345b" })}
+        ${svgMultilineText(item.label, (x + barWidth / 2).toFixed(1), height - 42, { size: 10, weight: 650, fill: "#334155", lineHeight: 13 })}`;
     })
     .join("");
   return `<svg class="chart-svg bar-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${htmlEscape(options.label || "柱状图")}">
-    <rect x="0" y="0" width="${width}" height="${height}" fill="#ffffff" rx="8" />
-    <line x1="${margin.left}" y1="${margin.top + chartHeight}" x2="${width - margin.right}" y2="${margin.top + chartHeight}" stroke="#cbd5e1" />
-    <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + chartHeight}" stroke="#cbd5e1" />
+    <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfdff" rx="18" />
+    ${gridLines}
+    <line x1="${margin.left}" y1="${margin.top + chartHeight}" x2="${width - margin.right}" y2="${margin.top + chartHeight}" stroke="#c7d7ec" />
     ${bars}
   </svg>`;
 }
 
 function renderIssueCard(issue, index) {
-  return `<article class="issue-card severity-${htmlEscape(issue.severity)}">
-    <div class="issue-head"><span class="severity">${htmlEscape(issue.severity)}</span><strong>${index + 1}. ${htmlEscape(customerFacingText(issue.issue))}</strong></div>
-    <dl>
-      <dt>归属维度</dt><dd>${htmlEscape(issue.dimensionTitle)}</dd>
-      <dt>精确定位</dt><dd>${htmlEscape(customerFacingText(issue.location || "需人工复核具体位置"))}</dd>
-      <dt>问题说明</dt><dd>${htmlEscape(customerFacingText(issue.evidence || "需人工复核"))}</dd>
-      <dt>修改建议</dt><dd>${htmlEscape(customerFacingText(issue.recommendation || "按终稿输出意见修订"))}</dd>
-    </dl>
+  const view = buildCustomerIssueView(issue, index);
+  return `<article class="issue-card severity-${htmlEscape(view.severity)}">
+    <div class="issue-head">
+      <span class="severity-badge">${htmlEscape(view.severity)}</span>
+      <div>
+        <strong>${index + 1}. ${htmlEscape(view.title)}</strong>
+        <div class="issue-dimension">${htmlEscape(view.dimensionTitle)}</div>
+      </div>
+    </div>
+    <div class="issue-field"><span>精确定位</span><p>${htmlEscape(view.location)}</p></div>
+    <div class="issue-field"><span>为什么是问题</span><p>${htmlEscape(view.why)}</p></div>
+    <div class="issue-field"><span>投稿风险</span><p>${htmlEscape(view.submissionRisk)}</p></div>
+    <div class="issue-field"><span>低成本处理建议</span><p>${htmlEscape(view.revisionAdvice)}</p></div>
   </article>`;
 }
 
@@ -4056,7 +5106,8 @@ function renderScoreTableRows(moduleScores) {
     .map((item) => `<tr>
       <td>${htmlEscape(item.title)}</td>
       <td class="score-cell">${item.score === null || item.score === undefined ? "未生成" : item.score}</td>
-      <td>${htmlEscape(item.rationale || "未生成模型评分理由。")}</td>
+      <td>${htmlEscape(item.rationale || "未生成评分理由。")}</td>
+      <td class="diagnosis-cell">${htmlEscape(item.diagnosis || "未生成六维诊断。")}</td>
     </tr>`)
     .join("");
 }
@@ -4069,13 +5120,33 @@ function renderPdfReportHtml(task, data) {
     { label: "P3", value: data.severityCounts.P3, color: "#64748b" }
   ];
   const distributionItems = PDF_DIMENSIONS.map((dimension) => ({
-    label: dimension.title.replace("与", "\n与"),
+    label: shortDimensionTitle(dimension),
     value: data.issueDistribution[dimension.key] || 0,
-    color: "#2563eb"
+    color: "#1f5cc8"
   }));
   const priorityIssues = data.priorityIssues.slice(0, 10);
-  const fullIssues = data.reportIssues.slice(0, 24);
+  const fullIssues = data.reportIssues;
   const artifactCompletion = data.artifactCompletionSummary || { overview: "", key_risks: [], recommended_actions: [] };
+  const reportDate = String(data.generatedAt || "").slice(0, 10) || "-";
+  const totalIssues = ["P0", "P1", "P2", "P3"].reduce((sum, key) => sum + (data.severityCounts[key] || 0), 0);
+  const scoreDisplay = data.scoreSummary.hasOverallScore ? data.overallScore : "未生成";
+  const scoreLabel = data.scoreSummary.overallScoreLabel || "综合评估";
+  const scoreRationale = data.scoreSummary.overallScoreRationale || "当前报告未包含综合评分。";
+  const pageFrame = (number, title, subtitle, body, options = {}) => `<section class="page ${options.className || ""}">
+    <header class="page-header">
+      <div>
+        <div class="page-kicker">SCI QUALITY REVIEW</div>
+        <div class="page-title">${htmlEscape(title)}</div>
+      </div>
+      <div class="page-number">${htmlEscape(number)}</div>
+    </header>
+    ${subtitle ? `<p class="section-lead">${htmlEscape(subtitle)}</p>` : ""}
+    <main class="page-body">${body}</main>
+    <footer class="page-footer">
+      <span>${htmlEscape(REPORT_TITLE)}</span>
+      <span>${htmlEscape(reportDate)} · ${htmlEscape(task.id)}</span>
+    </footer>
+  </section>`;
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -4083,128 +5154,185 @@ function renderPdfReportHtml(task, data) {
   <meta charset="utf-8" />
   <title>${htmlEscape(REPORT_TITLE)}</title>
   <style>
-    @page { size: A4; margin: 15mm 14mm; }
+    @page { size: A4; margin: 0; }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #0f172a; background: #fff; font-size: 13px; line-height: 1.55; }
-    .page { min-height: 267mm; page-break-after: always; padding: 0; position: relative; }
+    body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #132033; background: #eef3f9; font-size: 12.5px; line-height: 1.58; }
+    .page { width: 210mm; min-height: 297mm; page-break-after: always; padding: 13mm 14mm 10mm; position: relative; overflow: hidden; background: #ffffff; display: flex; flex-direction: column; }
     .page:last-child { page-break-after: auto; }
-    .cover { display: flex; flex-direction: column; justify-content: space-between; border-top: 8px solid #0f4c81; padding-top: 18mm; }
-    .kicker { color: #1d4ed8; font-weight: 700; letter-spacing: 0.04em; }
-    h1 { font-size: 30px; margin: 12px 0 10px; line-height: 1.2; }
-    h2 { font-size: 19px; margin: 0 0 12px; border-left: 5px solid #1d4ed8; padding-left: 10px; }
-    h3 { font-size: 15px; margin: 14px 0 8px; }
-    .subtle { color: #64748b; }
-    .meta-grid { display: grid; grid-template-columns: 32mm 1fr; gap: 8px 14px; margin-top: 20px; }
-    .meta-grid dt { color: #64748b; }
-    .meta-grid dd { margin: 0; font-weight: 600; }
-    .footer { color: #64748b; font-size: 11px; border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 16px; }
-    .overview-grid { display: grid; grid-template-columns: 1fr 56mm; gap: 14px; align-items: stretch; }
-    .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
-    .metric { border: 1px solid #dbe3ee; border-radius: 8px; padding: 9px; background: #f8fafc; }
-    .metric .label { color: #64748b; font-size: 11px; }
-    .metric .value { font-size: 24px; font-weight: 800; margin-top: 2px; }
-    .risk { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #eef2ff; color: #1d4ed8; font-weight: 700; }
-    .score-panel { text-align: center; border: 1px solid #dbe3ee; border-radius: 10px; padding: 14px; }
-    .score-number { font-size: 46px; line-height: 1; color: #0f4c81; font-weight: 800; }
+    .page::before { content: ""; position: absolute; inset: 0; pointer-events: none; background:
+      linear-gradient(138deg, rgba(31,92,200,0.055) 0 16%, transparent 16% 100%),
+      linear-gradient(42deg, transparent 0 72%, rgba(15,76,129,0.052) 72% 84%, transparent 84% 100%); }
+    .page > * { position: relative; z-index: 1; }
+    .cover { padding: 17mm 16mm 12mm; justify-content: space-between; background:
+      linear-gradient(135deg, rgba(255,255,255,0.98), rgba(247,250,254,0.96)),
+      linear-gradient(32deg, transparent 0 48%, rgba(222,232,244,0.72) 48% 60%, transparent 60%),
+      linear-gradient(148deg, transparent 0 56%, rgba(235,241,248,0.95) 56% 67%, transparent 67%); }
+    .cover::before { background:
+      linear-gradient(136deg, transparent 0 18%, rgba(211,222,238,0.65) 18% 19%, transparent 19% 100%),
+      linear-gradient(28deg, transparent 0 66%, rgba(31,92,200,0.075) 66% 76%, transparent 76% 100%); }
+    .cover-top { display: flex; justify-content: space-between; align-items: flex-start; color: #1f5cc8; font-size: 12px; font-weight: 800; letter-spacing: 0.03em; }
+    .cover-brand { font-size: 15px; }
+    .cover-main { margin-top: 28mm; max-width: 148mm; }
+    .cover-kicker { color: #1f5cc8; font-weight: 800; letter-spacing: 0.12em; font-size: 12px; text-transform: uppercase; }
+    .cover-title { color: #2155c8; font-size: 34px; line-height: 1.16; font-weight: 900; letter-spacing: 0; margin: 9mm 0 8mm; }
+    .cover-rule { width: 126mm; height: 1.3mm; background: #2155c8; border-radius: 99px; margin-bottom: 11mm; }
+    .cover-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 160mm; margin-top: 18mm; }
+    .cover-summary .summary-item { border-top: 1px solid #c9d8ec; padding-top: 8px; }
+    .summary-label { color: #6b7b92; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+    .summary-value { color: #17345b; font-size: 13px; font-weight: 800; margin-top: 3px; overflow-wrap: anywhere; }
+    .cover-footer { display: flex; justify-content: space-between; gap: 16px; color: #1f5cc8; font-size: 10.5px; font-weight: 650; border-top: 1px solid rgba(31,92,200,0.26); padding-top: 8px; }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1.5px solid #d4e0ef; padding-bottom: 7px; margin-bottom: 10px; }
+    .page-kicker { color: #1f5cc8; font-size: 9.5px; font-weight: 800; letter-spacing: 0.16em; }
+    .page-title { color: #17345b; font-size: 22px; line-height: 1.2; font-weight: 900; margin-top: 2px; }
+    .page-number { color: #1f5cc8; font-size: 21px; line-height: 1; font-weight: 900; }
+    .section-lead { color: #5b6b81; margin: -3px 0 12px; max-width: 155mm; }
+    .page-body { flex: 1; }
+    .page-footer { display: flex; justify-content: space-between; gap: 12px; color: #7a8799; font-size: 9.5px; border-top: 1px solid #e3ebf4; padding-top: 6px; margin-top: 12px; }
+    h3 { color: #17345b; font-size: 14px; margin: 12px 0 7px; }
+    p { margin: 5px 0 8px; }
+    .subtle { color: #65758b; }
+    .risk { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; background: #edf4ff; color: #1f5cc8; font-weight: 800; border: 1px solid #c9d8ec; }
+    .overview-grid { display: grid; grid-template-columns: 1fr 58mm; gap: 13px; align-items: stretch; }
+    .hero-card, .score-panel, .insight-card, .chart-card, .note { background: rgba(251,253,255,0.96); border: 1px solid #d7e3f1; border-radius: 12px; box-shadow: 0 5px 16px rgba(19,32,51,0.045); }
+    .hero-card { padding: 12px 14px; }
+    .score-panel { text-align: center; padding: 16px 12px; display: flex; flex-direction: column; justify-content: center; }
+    .score-label { color: #6b7b92; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; }
+    .score-number { font-size: 54px; line-height: 1; color: #2155c8; font-weight: 900; margin: 6px 0; }
+    .score-status { color: #17345b; font-weight: 850; font-size: 13px; }
+    .metric-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 13px 0; }
+    .metric { border: 1px solid #d7e3f1; border-radius: 10px; padding: 9px 10px; background: #fbfdff; }
+    .metric .label { color: #65758b; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; }
+    .metric .value { color: #17345b; font-size: 23px; font-weight: 900; margin-top: 1px; }
+    .metric-p0 .value { color: #b91c1c; }
+    .metric-p1 .value { color: #dc2626; }
+    .metric-p2 .value { color: #d97706; }
+    .metric-p3 .value { color: #64748b; }
     .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
-    .chart-svg { width: 100%; border: 1px solid #dbe3ee; border-radius: 10px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { border: 1px solid #dbe3ee; padding: 7px 8px; vertical-align: top; }
-    th { background: #f1f5f9; text-align: left; }
-    .score-cell { font-weight: 800; color: #0f4c81; text-align: center; font-size: 18px; }
-    .issue-card { border: 1px solid #dbe3ee; border-left: 6px solid #64748b; border-radius: 8px; padding: 10px 12px; margin: 9px 0; page-break-inside: avoid; }
+    .chart-card { padding: 11px; }
+    .chart-svg { width: 100%; border: 1px solid #d7e3f1; border-radius: 14px; background: #fbfdff; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 0; overflow: hidden; border: 1px solid #d7e3f1; border-radius: 12px; background: #ffffff; }
+    th, td { border-bottom: 1px solid #e4ecf6; padding: 8px 9px; vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    th { background: #eef5ff; color: #17345b; text-align: left; font-size: 11px; font-weight: 850; }
+    .score-cell { font-weight: 900; color: #2155c8; text-align: center; font-size: 20px; width: 18mm; }
+    .diagnosis-cell { color: #334155; }
+    .issue-card { background: #ffffff; border: 1px solid #d7e3f1; border-left: 5px solid #64748b; border-radius: 12px; padding: 10px 12px; margin: 9px 0; page-break-inside: avoid; box-shadow: 0 4px 12px rgba(19,32,51,0.04); }
     .severity-P0 { border-left-color: #b91c1c; }
     .severity-P1 { border-left-color: #dc2626; }
     .severity-P2 { border-left-color: #f59e0b; }
     .severity-P3 { border-left-color: #64748b; }
-    .issue-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
-    .severity { font-weight: 800; color: #fff; background: #0f172a; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
-    dl { margin: 0; display: grid; grid-template-columns: 28mm 1fr; gap: 4px 8px; }
-    dt { color: #64748b; }
-    dd { margin: 0; }
-    .note { background: #f8fafc; border: 1px solid #dbe3ee; border-radius: 8px; padding: 10px 12px; }
+    .issue-head { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 7px; }
+    .severity-badge { flex: none; font-weight: 900; color: #fff; background: #17345b; border-radius: 6px; padding: 2px 7px; font-size: 11px; letter-spacing: 0.02em; }
+    .severity-P0 .severity-badge { background: #b91c1c; }
+    .severity-P1 .severity-badge { background: #dc2626; }
+    .severity-P2 .severity-badge { background: #d97706; }
+    .severity-P3 .severity-badge { background: #64748b; }
+    .issue-head strong { color: #132033; font-size: 13px; line-height: 1.38; }
+    .issue-dimension { color: #1f5cc8; font-size: 10.5px; font-weight: 800; margin-top: 2px; }
+    .issue-field { display: grid; grid-template-columns: 25mm 1fr; gap: 8px; border-top: 1px solid #edf2f8; padding-top: 6px; margin-top: 6px; }
+    .issue-field span { color: #65758b; font-size: 10.5px; font-weight: 850; }
+    .issue-field p { margin: 0; color: #26364a; }
+    .note { padding: 11px 12px; }
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    ul { padding-left: 18px; margin-top: 6px; }
+    .insight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 12px 0; }
+    .insight-card { padding: 11px; min-height: 28mm; }
+    .insight-card .label { color: #65758b; font-size: 10px; font-weight: 850; letter-spacing: 0.06em; }
+    .insight-card .text { color: #17345b; font-weight: 750; margin-top: 5px; }
+    ul { padding-left: 18px; margin: 6px 0 0; }
     li { margin: 3px 0; }
   </style>
 </head>
 <body>
   <section class="page cover">
-    <div>
-      <div class="kicker">SCI PRE-SUBMISSION QUALITY REVIEW</div>
-      <h1>${htmlEscape(REPORT_TITLE)}</h1>
-      <p class="subtle">${htmlEscape(data.version)}</p>
-      <dl class="meta-grid">
-        <dt>文稿名称</dt><dd>${htmlEscape(task.originalFilename || "-")}</dd>
-        <dt>任务 ID</dt><dd>${htmlEscape(task.id)}</dd>
-        <dt>客户信息</dt><dd>${htmlEscape(task.customerInfo || "未填写")}</dd>
-        <dt>生成时间</dt><dd>${htmlEscape(data.generatedAt)}</dd>
-        <dt>报告状态</dt><dd>${htmlEscape(STATUS_TEXT.succeeded)}</dd>
-      </dl>
+    <div class="cover-top">
+      <div class="cover-brand">INTRON SCI REVIEW</div>
+      <div>${htmlEscape(reportDate)}</div>
     </div>
-    <div class="footer">本报告用于投稿前质量控制和修改优先级判断，不代表期刊录用概率。</div>
+    <div class="cover-main">
+      <div class="cover-kicker">Pre-submission Quality Control</div>
+      <div class="cover-title">${htmlEscape(REPORT_TITLE)}</div>
+      <div class="cover-rule"></div>
+      <p class="subtle">面向临床 SCI 投稿前的结构化质控、风险定位与修改优先级建议。</p>
+      <div class="cover-summary">
+        <div class="summary-item"><div class="summary-label">Manuscript</div><div class="summary-value">${htmlEscape(task.originalFilename || "-")}</div></div>
+        <div class="summary-item"><div class="summary-label">Overall Score</div><div class="summary-value">${htmlEscape(scoreDisplay)}</div></div>
+        <div class="summary-item"><div class="summary-label">Risk Level</div><div class="summary-value">${htmlEscape(data.riskLevel)}</div></div>
+        <div class="summary-item"><div class="summary-label">Task ID</div><div class="summary-value">${htmlEscape(task.id)}</div></div>
+        <div class="summary-item"><div class="summary-label">Customer Info</div><div class="summary-value">${htmlEscape(task.customerInfo || "未填写")}</div></div>
+        <div class="summary-item"><div class="summary-label">Version</div><div class="summary-value">${htmlEscape(data.version)}</div></div>
+      </div>
+    </div>
+    <div class="cover-footer">
+      <span>SCI manuscript quality review</span>
+      <span>本报告用于投稿前质量控制和修改优先级判断，不代表期刊录用概率。</span>
+    </div>
   </section>
 
-  <section class="page">
-    <h2>一页式总览</h2>
-    <div class="overview-grid">
-      <div>
+  ${pageFrame("01", "一页式总览", "用一页呈现投稿前最重要的结论、风险等级、问题数量和最小修改方向。",
+  `<div class="overview-grid">
+      <div class="hero-card">
         <p><span class="risk">${htmlEscape(data.riskLevel)}</span></p>
         <h3>总体结论</h3>
         <p>${htmlEscape(data.finalJson.overall_conclusion || "暂无总体结论。")}</p>
         <h3>200字以内摘要</h3>
         <p>${htmlEscape(data.finalJson.summary || "暂无摘要。")}</p>
-        <h3>最小修改建议</h3>
-        <p>${htmlEscape(data.minRevisionAdvice)}</p>
       </div>
       <div class="score-panel">
-        <div class="subtle">综合评分</div>
-        <div class="score-number">${data.scoreSummary.hasOverallScore ? data.overallScore : "未生成"}</div>
-        <div class="subtle">${htmlEscape(data.scoreSummary.overallScoreLabel || "模型模糊评分")}</div>
-        <p>${htmlEscape(data.scoreSummary.overallScoreRationale || "未生成模型评分，请使用新版终稿输出重新生成。")}</p>
+        <div class="score-label">OVERALL SCORE</div>
+        <div class="score-number">${htmlEscape(scoreDisplay)}</div>
+        <div class="score-status">${htmlEscape(scoreLabel)}</div>
+        <p class="subtle">${htmlEscape(scoreRationale)}</p>
       </div>
     </div>
     <div class="metric-grid">
-      ${["P0", "P1", "P2", "P3"].map((key) => `<div class="metric"><div class="label">${key} 问题</div><div class="value">${data.severityCounts[key] || 0}</div></div>`).join("")}
+      <div class="metric"><div class="label">全部问题</div><div class="value">${totalIssues}</div></div>
+      ${["P0", "P1", "P2", "P3"].map((key) => `<div class="metric metric-${key.toLowerCase()}"><div class="label">${key} 问题</div><div class="value">${data.severityCounts[key] || 0}</div></div>`).join("")}
     </div>
-  </section>
+    <div class="insight-grid">
+      <div class="insight-card"><div class="label">优先处理</div><div class="text">${priorityIssues.length ? `建议先处理 ${priorityIssues.length} 项核心问题` : "未锁定优先问题"}</div></div>
+      <div class="insight-card"><div class="label">修改方向</div><div class="text">${htmlEscape(data.minRevisionAdvice)}</div></div>
+      <div class="insight-card"><div class="label">报告用途</div><div class="text">用于内部投稿前质控、修改排序和交付沟通。</div></div>
+    </div>`)}
 
-  <section class="page">
-    <h2>六维评分</h2>
-    <div class="chart-row">
-      <div>${renderRadarSvg(data.moduleScores)}</div>
-      <div>
-        <table>
-          <thead><tr><th>维度</th><th>分数</th><th>简要理由</th></tr></thead>
-          <tbody>${renderScoreTableRows(data.moduleScores)}</tbody>
-        </table>
+  ${pageFrame("02", "综合评分与六维雷达", "评分来自最终综合判断，用于辅助识别主要短板和修订投入方向。",
+  `<div class="overview-grid">
+      <div class="score-panel">
+        <div class="score-label">OVERALL SCORE</div>
+        <div class="score-number">${htmlEscape(scoreDisplay)}</div>
+        <div class="score-status">${htmlEscape(scoreLabel)}</div>
+        <p class="subtle">${htmlEscape(scoreRationale)}</p>
       </div>
+      <div class="chart-card">${renderRadarSvg(data.moduleScores)}</div>
     </div>
-  </section>
+    <table>
+      <thead><tr><th>维度</th><th>分数</th><th>简要理由</th><th>六维诊断</th></tr></thead>
+      <tbody>${renderScoreTableRows(data.moduleScores)}</tbody>
+    </table>`)}
 
-  <section class="page">
-    <h2>问题分布</h2>
-    <div class="chart-row">
-      <div>
+  ${pageFrame("03", "问题分布与风险结构", "按严重程度和六个审查维度呈现最终问题池，帮助判断修订工作量。",
+  `<div class="chart-row">
+      <div class="chart-card">
         <h3>严重程度分布</h3>
         ${renderBarChartSvg(severityItems, { label: "严重程度分布" })}
       </div>
-      <div>
+      <div class="chart-card">
         <h3>六维度问题数量</h3>
         ${renderBarChartSvg(distributionItems, { label: "六维度问题数量" })}
       </div>
     </div>
-  </section>
+    <div class="metric-grid">
+      <div class="metric metric-p0"><div class="label">P0</div><div class="value">${data.severityCounts.P0 || 0}</div></div>
+      <div class="metric metric-p1"><div class="label">P1</div><div class="value">${data.severityCounts.P1 || 0}</div></div>
+      <div class="metric metric-p2"><div class="label">P2</div><div class="value">${data.severityCounts.P2 || 0}</div></div>
+      <div class="metric metric-p3"><div class="label">P3</div><div class="value">${data.severityCounts.P3 || 0}</div></div>
+      <div class="metric"><div class="label">优先项</div><div class="value">${priorityIssues.length}</div></div>
+    </div>`)}
 
-  <section class="page">
-    <h2>优先处理问题</h2>
-    <p class="subtle">以下问题按投稿前处理优先级排列，建议先完成这些修订，再处理其余优化项。</p>
-    ${priorityIssues.length ? priorityIssues.map(renderIssueCard).join("") : `<div class="note">未锁定需要优先处理的问题。</div>`}
-  </section>
+  ${pageFrame("04", "优先处理问题", "以下问题按投稿前处理优先级排列，建议先完成这些修订，再处理其余优化项。",
+  `${priorityIssues.length ? priorityIssues.map(renderIssueCard).join("") : `<div class="note">未锁定需要优先处理的问题。</div>`}`)}
 
-  <section class="page">
-    <h2>图表与材料完成度摘要</h2>
-    <div class="two-col">
+  ${pageFrame("05", "图表与材料完成度摘要", "仅展示客户友好的材料完成度结论和修改动作，不展示文件解析或内部调试过程。",
+  `<div class="two-col">
       <div class="note">
         <h3>总体判断</h3>
         <p>${htmlEscape(artifactCompletion.overview || "暂无图表与材料完成度摘要。")}</p>
@@ -4215,16 +5343,13 @@ function renderPdfReportHtml(task, data) {
       </div>
     </div>
     <h3>建议处理动作</h3>
-    ${artifactCompletion.recommended_actions?.length ? `<ul>${artifactCompletion.recommended_actions.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<div class=\"note\">按完整问题清单逐项核对图号、表号、图注、表题和正文引用即可。</div>"}
-  </section>
+    ${artifactCompletion.recommended_actions?.length ? `<ul>${artifactCompletion.recommended_actions.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<div class=\"note\">按完整问题清单逐项核对图号、表号、图注、表题和正文引用即可。</div>"}`)}
 
-  <section class="page">
-    <h2>附录摘要</h2>
-    <h3>完整问题清单摘录</h3>
+  ${pageFrame("06", "完整问题清单", "本页保留最终锁定问题的客户版完整清单，用于后续逐项修改和复核。",
+  `<h3>完整问题清单</h3>
     ${fullIssues.length ? fullIssues.map(renderIssueCard).join("") : `<div class="note">暂无结构化问题清单。</div>`}
     <h3>投稿前检查清单</h3>
-    <ul>${(data.finalJson.pre_submission_checklist || []).map((item) => `<li>${htmlEscape(toPlainReportText(item))}</li>`).join("") || "<li>暂无检查清单。</li>"}</ul>
-  </section>
+    <ul>${(data.checklist || []).map((item) => `<li>${htmlEscape(customerFacingText(toPlainReportText(item)))}</li>`).join("") || "<li>暂无检查清单。</li>"}</ul>`)}
 </body>
 </html>`;
 }
@@ -4274,6 +5399,55 @@ async function fileExists(filePath) {
   }
 }
 
+function resolveStorageChild(candidate) {
+  if (!candidate) return "";
+  const resolved = path.resolve(String(candidate));
+  const storageRoot = path.resolve(STORAGE_DIR);
+  if (resolved === storageRoot) return "";
+  if (!resolved.startsWith(`${storageRoot}${path.sep}`)) return "";
+  return resolved;
+}
+
+function addCleanupPath(paths, candidate) {
+  const resolved = resolveStorageChild(candidate);
+  if (resolved) paths.add(resolved);
+}
+
+function collectTaskCleanupPaths(task) {
+  const paths = new Set();
+  const taskId = String(task.id || "").trim();
+  for (const candidate of [
+    task.uploadPath,
+    task.parsedTextPath,
+    task.artifactManifestPath,
+    task.promptSnapshotPath,
+    task.reportPath,
+    task.pdfReportPath,
+    taskId ? path.join(REPORT_DIR, `${taskId}_客户版PDF可视化报告.html`) : "",
+    taskId ? path.join(STAGE_OUTPUT_DIR, `${taskId}_三阶段调试输出.txt`) : "",
+    taskId ? path.join(STORAGE_DIR, "extracted-images", taskId) : "",
+    taskId ? path.join(STORAGE_DIR, "extracted-images", `manual-${taskId}`) : ""
+  ]) {
+    addCleanupPath(paths, candidate);
+  }
+
+  const manifest = task.artifactManifest && typeof task.artifactManifest === "object" ? task.artifactManifest : {};
+  addCleanupPath(paths, manifest.extracted_images_dir);
+  for (const item of Array.isArray(manifest.image_sequence) ? manifest.image_sequence : []) {
+    addCleanupPath(paths, item?.extracted_path);
+  }
+
+  return [...paths];
+}
+
+async function cleanupTaskFiles(task) {
+  const paths = collectTaskCleanupPaths(task);
+  for (const target of paths) {
+    await fsp.rm(target, { recursive: true, force: true });
+  }
+  return paths.map((target) => path.relative(STORAGE_DIR, target));
+}
+
 async function generatePdfReport(task) {
   const data = buildV22ReportData(task);
   const htmlPath = path.join(REPORT_DIR, `${task.id}_客户版PDF可视化报告.html`);
@@ -4284,6 +5458,7 @@ async function generatePdfReport(task) {
 }
 
 async function generateTaskReports(task) {
+  ensureExpandedFinalReviewText(task);
   task.reportPath = await generateReport(task);
   task.reportVersion = DOCX_REPORT_SCHEMA_VERSION;
   task.pdfReportPath = await generatePdfReport(task);
@@ -4291,6 +5466,14 @@ async function generateTaskReports(task) {
 }
 
 async function ensureDocxReport(task) {
+  if (ensureExpandedFinalReviewText(task)) {
+    task.reportPath = "";
+    task.pdfReportPath = "";
+    task.reportVersion = "";
+    task.pdfReportVersion = "";
+    task.updatedAt = nowIso();
+    await saveDb();
+  }
   if (task.reportVersion === DOCX_REPORT_SCHEMA_VERSION && (await fileExists(task.reportPath))) return task.reportPath;
   task.reportPath = await generateReport(task);
   task.reportVersion = DOCX_REPORT_SCHEMA_VERSION;
@@ -4300,6 +5483,14 @@ async function ensureDocxReport(task) {
 }
 
 async function ensurePdfReport(task) {
+  if (ensureExpandedFinalReviewText(task)) {
+    task.reportPath = "";
+    task.pdfReportPath = "";
+    task.reportVersion = "";
+    task.pdfReportVersion = "";
+    task.updatedAt = nowIso();
+    await saveDb();
+  }
   if (task.pdfReportVersion === PDF_REPORT_SCHEMA_VERSION && (await fileExists(task.pdfReportPath))) return task.pdfReportPath;
   task.pdfReportPath = await generatePdfReport(task);
   task.pdfReportVersion = PDF_REPORT_SCHEMA_VERSION;
@@ -4311,6 +5502,7 @@ async function ensurePdfReport(task) {
 async function generateReport(task) {
   const finalJson = task.finalJson || {};
   const scoreSummary = normalizeModelScoreSummary(finalJson.report_content || {});
+  const docxIssueSections = buildDocxIssueSections(task, finalJson);
   const reportStatus = task.status === "docx_generating" ? "succeeded" : task.status;
   const children = [
     paragraph("投稿前预审质控报告与修改意见", {
@@ -4335,13 +5527,13 @@ async function generateReport(task) {
     paragraph("五、200字以内摘要", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
     ...renderTextBlock(finalJson.summary),
     paragraph("六、必须修改问题", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
-    ...renderList(finalJson.must_fix),
+    ...renderList(docxIssueSections.mustFix),
     paragraph("七、建议修改问题", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
-    ...renderList(finalJson.suggested_fix),
+    ...renderList(docxIssueSections.suggestedFix),
     paragraph("八、正文 / 图表修改意见", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
-    ...renderList(finalJson.text_and_figure_comments),
+    ...renderList(docxIssueSections.textAndFigureComments),
     paragraph("九、合规与风险提示", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
-    ...renderList(finalJson.compliance_risk),
+    ...renderList(docxIssueSections.complianceRisk),
     paragraph("十、投稿前检查清单", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
     ...renderList(finalJson.pre_submission_checklist),
     paragraph("十一、模型评分摘要", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
@@ -4528,6 +5720,7 @@ async function processTask(taskId) {
       createdAt: nowIso()
     };
     task.finalJson = parseFinalJson(finalResult.output);
+    ensureExpandedFinalReviewText(task);
     task.summary = task.finalJson.summary;
     await saveDb();
 
@@ -4984,6 +6177,32 @@ async function bootstrap() {
 
   app.get("/api/v1/admin/review-tasks/:taskId/report.pdf", requireAdmin, sendTaskPdfReport);
 
+  app.delete("/api/v1/admin/review-tasks/:taskId", requireAdmin, async (req, res) => {
+    const index = db.tasks.findIndex((task) => task.id === req.params.taskId);
+    if (index === -1) return jsonError(res, 404, "任务不存在");
+    const task = db.tasks[index];
+    if (!DELETABLE_TASK_STATUSES.has(task.status)) {
+      return jsonError(res, 400, "当前任务仍在运行或等待处理，请先取消任务后再删除");
+    }
+
+    let cleanedPaths = [];
+    try {
+      cleanedPaths = await cleanupTaskFiles(task);
+    } catch (error) {
+      return jsonError(res, 500, "删除任务文件失败，任务记录已保留，请重试", error.message || String(error));
+    }
+
+    const [deleted] = db.tasks.splice(index, 1);
+    try {
+      await saveDb();
+    } catch (error) {
+      db.tasks.splice(index, 0, deleted);
+      return jsonError(res, 500, "保存任务删除状态失败，请重试", error.message || String(error));
+    }
+
+    res.json({ ok: true, deletedId: deleted.id, cleanedFiles: cleanedPaths.length });
+  });
+
   app.post("/api/v1/admin/review-tasks/:taskId/retry", requireAdmin, async (req, res) => {
     const task = findTask(req.params.taskId);
     if (!task) return jsonError(res, 404, "任务不存在");
@@ -5175,6 +6394,7 @@ async function bootstrap() {
       createdAt: nowIso()
     };
     task.finalJson = parseFinalJson(output);
+    ensureExpandedFinalReviewText(task);
     task.summary = task.finalJson.summary;
     task.error = "";
     task.reportPath = "";
@@ -5201,6 +6421,22 @@ async function bootstrap() {
       parsedPackage = parseSkillOutputPackage(packageText);
     } catch (error) {
       return jsonError(res, 400, error.message || "skills 完整输出解析失败");
+    }
+    const fidelityValidation = validateFidelityPackage(parsedPackage);
+    const enforceFidelityValidation = shouldEnforceFidelityValidation(parsedPackage);
+    if (enforceFidelityValidation && fidelityValidation.errors.length) {
+      return jsonError(res, 400, `全链路保真校验失败：${fidelityValidation.errors.join("；")} 请回到网页端对 adjudicator_review / final_adjudication 做格式与保真修复后再导入。`);
+    }
+    if (parsedPackage.mode === "v2.1") {
+      parsedPackage.runnerMetadata = {
+        ...(parsedPackage.runnerMetadata || {}),
+        fidelity_contract_version: parsedPackage.runnerMetadata?.fidelity_contract_version || "source-coverage.v1",
+        fidelity_validation: {
+          mode: enforceFidelityValidation ? "strict" : "legacy-compatible",
+          checkedAt: nowIso(),
+          ...fidelityValidation
+        }
+      };
     }
 
     await ensurePromptSnapshotFile(task);
@@ -5338,6 +6574,7 @@ async function bootstrap() {
       createdAt: nowIso()
     };
     task.finalJson = parsedPackage.finalJson;
+    ensureExpandedFinalReviewText(task);
     task.summary = task.finalJson.summary;
     task.error = "";
     task.reportPath = "";
