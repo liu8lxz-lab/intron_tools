@@ -66,12 +66,13 @@ This skill does not call the web app API, does not read API configs, and does no
    - Do not re-review the manuscript or change adjudicator conclusions. Output only customer-facing report-level data: summary, conclusion, priority issue IDs, strengths, weaknesses, six-dimensional diagnosis, checklist, and no internal double-run, comparator, prompt, token, or extraction-process wording in customer fields.
    - `report_content.final_issue_list` may be empty or contain only issue references. The local backend will fill it from the adjudicator issue pool and generate expanded customer-facing issue text.
    - Do not merge, delete, reorder, split, downgrade, or reword away any adjudicated issue in the final output step.
-   - Produce `report_content.score_summary` from the final issue pool using model fuzzy judgment. Do not use backend-style mechanical deduction language.
+   - Produce `report_content.score_summary` from the final issue pool using model fuzzy judgment. Do not use backend-style mechanical deduction language. If the adjudicator did not provide scores, the final stage must still score from the final issue pool; never output placeholders such as `未稳定提供`, `仅能依据问题分布判断`, `无法评分`, or all-zero schema examples.
    - Return strict JSON only, without Markdown fences or extra prose.
 8. Validate the final JSON with:
    ```bash
    node /Users/a682/.codex/skills/sci-pre-review-runner/scripts/validate_final_json.mjs --input "/path/to/final.json"
    ```
+   If validation reports missing, placeholder, or all-zero `score_summary`, repair only `report_content.score_summary` in the same `final_adjudication` conversation. Do not re-review the manuscript and do not change the final issue pool, priority issue IDs, or other adjudicated conclusions.
 
 ## Output Format
 
@@ -249,7 +250,7 @@ final_adjudication JSON:
 ```
 
 The `summary` field must be no longer than 200 Chinese characters. Array fields must be JSON arrays. Array items may be strings or objects.
-The optional `report_content` object should carry adjudicator-derived structured data for PDF/report visualization where available. When `adjudicator_review JSON` or a complete issue pool is available, it must include `score_summary`; the app reads these scores directly for Word/PDF and does not compute customer-facing scores by mechanical deduction. If upstream scoring is in `X.X / 10`, preserve that text and provide the percentage equivalent for charts.
+The optional `report_content` object should carry adjudicator-derived structured data for PDF/report visualization where available. When `adjudicator_review JSON` or a complete issue pool is available, it must include `score_summary`; the app reads these scores directly for Word/PDF and does not compute customer-facing scores by mechanical deduction. If upstream scoring is in `X.X / 10`, preserve that text and provide the percentage equivalent for charts. If upstream scoring is absent, the final stage must still provide model fuzzy scoring from the final issue pool; missing scores, placeholder wording, and all-zero examples must be repaired before backend import.
 
 For debugging quality, do not omit `issue_narrative` from Agent or comparator issue objects. The compact adjudicator may omit long issue bodies because the backend materializes them from the Agent merged issue lists.
 

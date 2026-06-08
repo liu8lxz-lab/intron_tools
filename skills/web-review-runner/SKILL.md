@@ -54,26 +54,26 @@ Pause and ask the user only when a new material risk appears:
 
 3. For every Agent run:
    - Paste the stage `systemPrompt` and `userPrompt`.
-   - Upload the original Word manuscript when the web AI supports file upload.
+   - Attach the pre-approved original Word manuscript when the web AI supports file input. Prefer the web AI's "recent files" / "近期文件" picker first, but only select an exact visible filename match for the pre-approved manuscript. If the exact file is not present, cannot be selected, or the attached state cannot be confirmed, fall back to uploading the manuscript from the local file picker.
    - If the model cannot receive both a file and long text, prioritize the Word file plus concise task instructions, then add extracted text only when needed.
    - Capture the returned JSON exactly.
 
 4. Use the fixed automation state machine for every web run:
    - Open a new independent conversation.
-   - Upload the pre-approved Word file when required.
+   - Attach the pre-approved Word file when required, using the recent-file picker first and local upload only as fallback.
    - Paste long prompts through the system clipboard so the page can attach them as pasted-text files.
    - Send the concise stage instruction.
    - Wait until generation has stopped.
    - Prefer the web page's copy button to collect the full response.
    - Save raw output locally, parse strict JSON immediately, and write the normalized JSON file.
    - If JSON is invalid, send a same-conversation formatting repair request only; do not re-review or start a new run.
-   - Record every conversation URL, upload confirmation, retry, format repair, and pause in `runner_metadata`.
+   - Record every conversation URL, Word attachment source (`recent-file` or `local-upload`), upload/attachment confirmation, retry, format repair, and pause in `runner_metadata`.
 
 5. Run the comparator once for each Agent after both runs finish. Use the comparator `systemPrompt` and replace the user prompt placeholders with actual run outputs. If the comparator output is invalid JSON, ask the same conversation to repair formatting only; do not ask it to re-review the manuscript.
 
 6. Run `adjudicator_review` once after all six merged issue lists are ready. It must read the six consistency reports and six merged issue lists, but it should return a compact adjudication JSON instead of rewriting every long issue. Do not ask the web model to output `report_text`, `report_sections`, or a customer-facing report draft in this stage. Required outputs are `final_issue_decisions`, `priority_issue_ids`, `source_issue_coverage`, `adjudication_decisions`, `excluded_issues`, counts, distribution, strengths/weaknesses, and dimension diagnosis. The local backend will materialize `adjudicator_review.final_issue_list` from `final_issue_decisions + agent_merged_issue_lists`, preserving `issue_narrative`, `submission_risk`, `evidence_quotes`, and `revision_path` from the Agent outputs. `source_issue_coverage` must have one record for every issue in the six merged Agent lists. Each record must say whether the source issue was `kept_as`, `merged_into`, or `excluded`; no silent dropping is allowed, and P0/P1 exclusions must include a specific evidence-based reason. If the six merged lists contain at least 10 candidate issues, `final_issue_decisions` must keep at least 65% of them; if it falls below 65%, ask the same conversation to restore over-merged issues or re-adjudicate item by item instead of only adding explanations.
 
-7. Run `final_adjudication` only after `adjudicator_review JSON` is complete. It must use the adjudicator output as the primary source and return final report JSON, but it does not need to repeat the full issue body. Required outputs are the eight base fields, `report_content.score_summary`, submission recommendation, risk level, revision workload, strengths/weaknesses, dimension diagnosis, `priority_issue_ids`, checklist, and customer-facing artifact completion summary. `report_content.final_issue_list` may be empty or contain only issue references; the local backend will fill it from the adjudicator issue pool. The final stage must not merge, delete, reorder, split, downgrade, or reword away any adjudicated issue. If scores are in `X.X / 10`, preserve that text and also output the percentage equivalent in `report_content.score_summary` for PDF charts.
+7. Run `final_adjudication` only after `adjudicator_review JSON` is complete. It must use the adjudicator output as the primary source and return final report JSON, but it does not need to repeat the full issue body. Required outputs are the eight base fields, `report_content.score_summary`, submission recommendation, risk level, revision workload, strengths/weaknesses, dimension diagnosis, `priority_issue_ids`, checklist, and customer-facing artifact completion summary. `report_content.final_issue_list` may be empty or contain only issue references; the local backend will fill it from the adjudicator issue pool. The final stage must not merge, delete, reorder, split, downgrade, or reword away any adjudicated issue. If scores are in `X.X / 10`, preserve that text and also output the percentage equivalent in `report_content.score_summary` for PDF charts. If the adjudicator did not provide scores, the final stage still must produce model fuzzy scores from the final issue pool; do not output placeholders such as `未稳定提供`, `仅能依据问题分布判断`, `无法评分`, or all-zero schema examples.
 
 ## Output Package
 
@@ -143,4 +143,5 @@ The local admin import accepts the optional `runner_metadata JSON` section and u
 - If any stage output is truncated, ask the same conversation to continue or return the complete JSON for that stage only.
 - If `adjudicator_review.final_issue_decisions` is below 65% of the six merged Agent candidate issue count, send a same-conversation fidelity repair request: `final_issue_decisions 数量不足，请恢复被过度合并的问题或逐项重裁。`
 - If the web model emits `report_text`, an overlong `final_issue_list`, or a truncated adjudicator JSON, send a formatting-only repair request: `请只保留 compact adjudicator_review JSON：final_issue_decisions、priority_issue_ids、source_issue_coverage、adjudication_decisions、excluded_issues 和统计字段；不要输出 report_text 或完整问题正文。`
+- After `final_adjudication` JSON parses, validate `report_content.score_summary` before import. It must contain one overall score and all six dimension scores as real 0-100 values, with no placeholder wording and no all-zero schema example. If invalid, stay in the same final conversation and send a score-only repair request: `只修复 report_content.score_summary：请基于裁决者最终问题池给出总体评分和六维评分，不重新审稿，不修改 final_issue_list、priority_issue_ids 或其他结论。不得写未稳定提供、仅能依据问题分布判断、无法评分或全 0 占位。只返回完整 final_adjudication JSON。`
 - If a stage fails repeatedly, record the failure in `runner_metadata.retries` and stop instead of fabricating output.

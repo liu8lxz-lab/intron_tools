@@ -215,6 +215,7 @@ final_review_text 可以输出报告总览正文，但不得写“具体见 repo
 2. overall_score_text / dimension_scores[].score_text：原始 X.X / 10 文本。
 3. overall_score / dimension_scores[].score：供程序绘图使用的百分制整数，等于 10 分制数字乘以 10 后四舍五入。
 如果上游已经给出百分制，可直接继承百分制，但不得改变裁决者的实质评分判断。overall_score_rationale 和 dimension_scores[].rationale 必须是客户可读综合判断，不写机械扣分公式，也不写“按 P0/P1/P2/P3 扣多少分”。
+如果上游没有给出评分，仍必须基于裁决者最终问题池、六维表现、P0/P1 严重度、可修复性和成稿完整度自行给出模型模糊评分。不得写“未稳定提供”“未在输入材料中提供”“当前仅能依据问题分布判断”“无法评分”等占位语，也不得保留 schema 示例中的 0 分占位。
 
 priority_issue_ids 输出 5-10 条优先处理问题 id；若最终问题不足 5 条则按实际数量。priority_actions 可只输出简短客户提示或留空；final_issue_list 可留空或只输出 id 引用，后端将从裁决者问题池补全完整问题正文。若你输出 priority_actions 或 final_issue_list，不得包含 source_runs、source_issue_ids、runner_metadata、artifact_manifest、report_text 等内部来源字段。
 

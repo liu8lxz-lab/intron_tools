@@ -55,7 +55,7 @@ const MAX_MANUSCRIPT_CHARS = Number(process.env.MAX_MANUSCRIPT_CHARS || 120_000)
 const PYTHON_BIN = process.env.PYTHON_BIN || "python3";
 const REPORT_TITLE = "投稿前预审质控报告与修改意见";
 const DOCX_REPORT_SCHEMA_VERSION = "customer-word-detailed-issue-sections-20260526";
-const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-structured-fields-20260527";
+const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-data-analytics-summary-20260604";
 const FIDELITY_RETENTION_MIN_SOURCE_COUNT = 10;
 const FIDELITY_MIN_ADJUDICATOR_RETENTION_RATE = 0.65;
 const DEFAULT_MODEL_TOKEN_BUDGETS = {
@@ -92,6 +92,7 @@ const PDF_DIMENSIONS = [
   { key: "figure_table_visual_audit", title: "图表质量与呈现完整性", stage: "figure_table_visual_audit" },
   { key: "submission_safety_expression", title: "投稿合规与成稿完整性", stage: "submission_safety_expression" }
 ];
+const PDF_DA_DIMENSION_COLORS = ["#2155c8", "#1d8ad8", "#36a3a1", "#7c3aed", "#e67817", "#c026d3"];
 
 const LEGACY_REVIEW_STAGES = [
   { key: "clinical_rationality", title: "临床合理性预审" },
@@ -815,6 +816,7 @@ source_runs 使用 ["run_1"]、["run_2"] 或 ["run_1", "run_2"]。
 5. 70 分以上表示整体勉强达到可投稿准备水平，但仍可有 P1/P2 修订项。
 6. 80 分以上表示投稿准备较成熟，通常不应存在 P0，P1 数量也应较少。
 7. 不得在报告中写“按 P0/P1/P2/P3 扣多少分”或机械扣分依据；评分理由应写成综合判断，例如“主要受研究路径、统计支撑和图表完成度影响”。
+8. 即使裁决者未给出任何评分，也必须由终稿输出阶段基于最终问题池给出模型模糊评分；不得写“未稳定提供”“未在输入材料中提供”“当前仅能依据问题分布判断”“无法评分”等占位语，也不得保留 schema 示例中的 0 分占位。
 
 【七、必须返回的 JSON】
 必须只返回以下 JSON 对象。8 个基础字段必须存在，字段名不得改动：
@@ -873,7 +875,7 @@ report_content 是可选对象；但只要输入中有 adjudicator_review JSON �
 8. final_review_text 是完整客户版报告正文，应包含总体判断、稿件优势、主要短板、优先处理问题、必须修改问题、建议修改问题、正文/图表意见、合规风险和投稿前检查清单的综合叙述。
 9. report_content.manuscript_strengths 输出 3-5 条稿件优势，语言应具体，不写泛泛表扬。
 10. report_content.major_weaknesses 输出 3-5 条主要短板，概括 P0/P1 集中风险。
-11. report_content.score_summary 输出模型模糊评分。overall_score、dimension_scores[].score 必须为 0-100 整数；overall_score_rationale 和 dimension_scores[].rationale 必须是客户可读综合判断，不写扣分公式。
+11. report_content.score_summary 输出模型模糊评分。overall_score、dimension_scores[].score 必须为 0-100 整数；overall_score_rationale 和 dimension_scores[].rationale 必须是客户可读综合判断，不写扣分公式；不得输出“未稳定提供”“仅能依据问题分布判断”“无法评分”等占位说明。
 12. report_content.priority_actions 输出 5-10 条优先处理问题，每条必须包含 severity、primary_dimension、issue、location、explanation、recommendation。
 13. report_content.final_issue_list 输出最终完整问题池。每条问题必须包含 severity、category、primary_dimension、issue、location、explanation、recommendation、confidence；不得包含 source_runs、source_issue_ids、prompt_id、token、latency 等内部字段。
 14. report_content.artifact_completion_summary 只写客户可理解的图表与材料完成度摘要，不写 Python、图片 ID、提取路径或技术状态。
@@ -1572,6 +1574,7 @@ function buildManualSkillContextText(task, manuscriptText) {
     "6. 当前系统仍仅支持 doc / docx，暂不支持 PDF。",
     "7. 若本机 CODEX_HOME 中同名 skill 版本不一致，请以项目内 skills/sci-pre-review-runner/SKILL.md 为准。",
     "8. 本任务使用已锁定的 prompt snapshot；后台后续修改提示词不影响本任务。",
+    "9. final_adjudication 必须输出有效 score_summary；若出现未稳定提供、仅能依据问题分布判断、无法评分、缺失六维评分或全 0 示例分，只在同一终稿会话中修复 score_summary，不重新审稿。",
     "",
     "建议命令（如需直接运行上下文构建脚本）：",
     `node "${commandSkillScript}" --manuscript "${commandManuscriptPath}" --customer-info "${commandCustomerInfo}" --project-root "${commandProjectRoot}"${promptArg}`,
@@ -1598,7 +1601,7 @@ function buildManualSkillInstructionText(task) {
   const projectSkillPath = path.join(ROOT, "skills", "sci-pre-review-runner", "SKILL.md");
   const projectSkillScript = path.join(ROOT, "skills", "sci-pre-review-runner", "scripts", "build_review_context.mjs");
   const promptSnapshotText = task.promptSnapshotPath ? `本任务提示词快照路径为：${task.promptSnapshotPath}；运行脚本时请加入 --prompts "${task.promptSnapshotPath}"，不要改用后台后续新版本提示词。` : "如后台已生成本任务提示词快照，请优先使用该快照，不要改用后台后续新版本提示词。";
-  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner v2.1 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 6 个 Agent 双跑、每个 Agent 一致性比较、6 份 Agent 合并问题清单；随后运行 adjudicator_review JSON 进行裁决者裁定，裁决者采用紧凑裁定协议，只输出 final_issue_decisions、priority_issue_ids、source_issue_coverage 等裁定字段，不输出 report_text 或完整客户报告正文；最后运行 final_adjudication JSON（业务含义为终稿输出），终稿只输出客户版报告层字段、模型模糊评分和 priority_issue_ids，完整问题正文由后台物化。请输出可粘贴回后台的完整 v2.1 三阶段结果包，格式需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON。`;
+  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner v2.1 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 6 个 Agent 双跑、每个 Agent 一致性比较、6 份 Agent 合并问题清单；随后运行 adjudicator_review JSON 进行裁决者裁定，裁决者采用紧凑裁定协议，只输出 final_issue_decisions、priority_issue_ids、source_issue_coverage 等裁定字段，不输出 report_text 或完整客户报告正文；最后运行 final_adjudication JSON（业务含义为终稿输出），终稿只输出客户版报告层字段、模型模糊评分和 priority_issue_ids，完整问题正文由后台物化。final_adjudication 必须输出有效 score_summary；若出现未稳定提供、仅能依据问题分布判断、无法评分、缺失六维评分或全 0 示例分，只在同一终稿会话中修复 score_summary，不重新审稿，不改变最终问题池。请输出可粘贴回后台的完整 v2.1 三阶段结果包，格式需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON。`;
 }
 
 function buildWebReviewRunnerInstructionText(task) {
@@ -1626,10 +1629,11 @@ function buildWebReviewRunnerInstructionText(task) {
     "4. 每个 Agent 独立对话双跑；每个 Agent 双跑后运行一致性比较并生成合并问题清单。",
     "5. 裁决者裁定只运行一次；采用紧凑裁定协议，输出 final_issue_decisions、priority_issue_ids 和 source_issue_coverage，不输出 report_text 或完整客户报告正文；若候选项不少于 10 项，final_issue_decisions 至少保留 65%。",
     "6. 终稿输出只基于裁决者裁定生成客户版报告层 JSON；report_content.final_issue_list 可留空或只给 ID 引用，后台会从裁决者问题池物化完整问题正文，priority_issue_ids 是 5-10 条优先子集。",
-    "7. 若网页端裁决者输出 report_text、超长 final_issue_list 或截断 JSON，优先在同一阶段发起 compact JSON 格式修复请求，不重新审稿。",
-    "8. 按固定状态机执行：新建独立会话、必要时上传 Word、剪贴板粘贴长 prompt、发送、等待完成、优先点击复制回复、保存 raw、严格 JSON 校验、必要时同会话格式修复、落盘 JSON。",
-    "9. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON、final_adjudication JSON。",
-    "10. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、authorization_mode=task-level-preapproval、fidelity_contract_version=source-coverage.v1、fidelity_validation_mode=strict、每阶段会话/运行编号、上传确认、格式修复、失败重试和暂停事件记录。"
+    "7. final_adjudication 必须输出有效 score_summary；若出现未稳定提供、仅能依据问题分布判断、无法评分、缺失六维评分或全 0 示例分，只在同一终稿会话中修复 score_summary，不重新审稿，不改变最终问题池。",
+    "8. 若网页端裁决者输出 report_text、超长 final_issue_list 或截断 JSON，优先在同一阶段发起 compact JSON 格式修复请求，不重新审稿。",
+    "9. 按固定状态机执行：新建独立会话、必要时上传 Word、剪贴板粘贴长 prompt、发送、等待完成、优先点击复制回复、保存 raw、严格 JSON 校验、必要时同会话格式修复、落盘 JSON。",
+    "10. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON、final_adjudication JSON。",
+    "11. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、authorization_mode=task-level-preapproval、fidelity_contract_version=source-coverage.v1、fidelity_validation_mode=strict、每阶段会话/运行编号、上传确认、格式修复、失败重试和暂停事件记录。"
   ].join("\n");
 }
 
@@ -2834,7 +2838,8 @@ function normalizedCoverageText(value) {
 function sourceIssueDescriptor(stageKey, issue, index) {
   const issueText = String(issue?.issue || issue?.title || issue?.problem || "").trim();
   const sourceIssueIds = normalizeStringArray(issue?.source_issue_ids || issue?.sourceIssueIds || issue?.source_ids || issue?.sourceIds);
-  const code = String(issue?.id || issue?.issue_id || issue?.issueId || issueShortCode(issueText) || sourceIssueIds[0] || `${stageKey}-${index + 1}`).trim();
+  const rawCode = String(issue?.id || issue?.issue_id || issue?.issueId || "").trim();
+  const code = String(issueShortCode(rawCode) || rawCode || issueShortCode(issueText) || sourceIssueIds[0] || `${stageKey}-${index + 1}`).trim();
   return {
     stage: stageKey,
     code,
@@ -3368,6 +3373,9 @@ function validateFidelityPackage(parsedPackage) {
   if (adjudicatorIssues.length && !finalIssues.length) {
     errors.push("终稿 report_content.final_issue_list 为空，无法生成客户版完整问题清单。");
   }
+  const scoreValidation = validateFinalScoreSummary(finalJson, Math.max(adjudicatorIssues.length, finalIssues.length));
+  errors.push(...scoreValidation.errors);
+  warnings.push(...scoreValidation.warnings);
 
   const internalTerms = scanCustomerFacingInternalTerms(finalJson);
   if (internalTerms.length) {
@@ -3383,6 +3391,63 @@ function validateFidelityPackage(parsedPackage) {
     finalIssueCount: finalIssues.length,
     retention
   };
+}
+
+function validateFinalScoreSummary(finalJson = {}, finalIssueCount = 0) {
+  const errors = [];
+  const warnings = [];
+  if (!finalIssueCount) return { errors, warnings };
+
+  const reportContent = finalJson.report_content || {};
+  const rawScoreSummary = reportContent.score_summary;
+  if (!rawScoreSummary || typeof rawScoreSummary !== "object" || Array.isArray(rawScoreSummary)) {
+    errors.push("终稿 report_content.score_summary 缺失；已有最终问题池时，终稿必须基于问题池输出客户版模型模糊评分。");
+    return { errors, warnings };
+  }
+
+  const scoreText = JSON.stringify(rawScoreSummary, (_key, value) => {
+    if (typeof value === "function") return undefined;
+    return value;
+  });
+  const placeholderPatterns = [
+    /未.{0,8}稳定提供/,
+    /未在输入材料中.{0,12}提供/,
+    /输入材料未.{0,12}提供/,
+    /仅能依据问题分布判断/,
+    /无法评分/,
+    /不能评分/,
+    /not\s+provided/i,
+    /not\s+available/i,
+    /\bN\/A\b/i
+  ];
+  if (placeholderPatterns.some((pattern) => pattern.test(scoreText))) {
+    errors.push("终稿 report_content.score_summary 含有评分占位语；请在同一 final_adjudication 会话中只修复 score_summary，不重新审稿。");
+  }
+
+  const normalized = normalizeModelScoreSummary(reportContent);
+  if (!normalized.hasOverallScore) {
+    errors.push("终稿 report_content.score_summary.overall_score 缺失或不是有效 0-100 数值。");
+  }
+  const missingDimensions = normalized.dimensionScores.filter((item) => item.score === null).map((item) => item.title);
+  if (missingDimensions.length) {
+    errors.push(`终稿 report_content.score_summary.dimension_scores 缺少有效六维评分：${missingDimensions.join("、")}。`);
+  }
+
+  const allScores = [
+    normalized.overallScore,
+    ...normalized.dimensionScores.map((item) => item.score)
+  ].filter((value) => value !== null);
+  if (allScores.length === PDF_DIMENSIONS.length + 1 && allScores.every((value) => value === 0)) {
+    errors.push("终稿 report_content.score_summary 全部为 0，疑似保留 schema 示例占位；已有最终问题池时必须输出实际模型模糊评分。");
+  }
+
+  const missingRationale = normalized.dimensionScores
+    .filter((item) => item.score !== null && !item.rationale)
+    .map((item) => item.title);
+  if (!normalized.overallScoreRationale) warnings.push("终稿 report_content.score_summary 缺少 overall_score_rationale，PDF 评分说明会偏弱。");
+  if (missingRationale.length) warnings.push(`终稿 report_content.score_summary 有维度评分缺少 rationale：${missingRationale.join("、")}。`);
+
+  return { errors, warnings };
 }
 
 function scanCustomerFacingInternalTerms(finalJson = {}) {
@@ -4449,12 +4514,13 @@ function normalizeResolvedIssueList(items, lookup = new Map(), fallbackCategory 
   const values = Array.isArray(items) ? items : [];
   const issues = [];
   for (const item of values) {
-    if (hasIssueDetail(item)) {
-      issues.push(normalizePdfIssue(item, fallbackCategory, fallbackSeverity));
-      continue;
-    }
     const id = issueReferenceId(item);
     const resolved = id ? lookup.get(id) : null;
+    if (hasIssueDetail(item)) {
+      const merged = resolved ? mergeIssueWithNonEmptyOverride(resolved, item) : item;
+      issues.push(normalizePdfIssue(merged, fallbackCategory, fallbackSeverity));
+      continue;
+    }
     if (resolved) issues.push(normalizePdfIssue(resolved, fallbackCategory, fallbackSeverity));
     else if (typeof item === "string" && item.trim() && !looksLikeIssueReference(item)) issues.push(normalizePdfIssue(item, fallbackCategory, fallbackSeverity));
   }
@@ -5084,6 +5150,88 @@ function renderBarChartSvg(items, options = {}) {
   </svg>`;
 }
 
+function wrapSvgLabel(value, maxLength = 9) {
+  const text = String(value ?? "").trim();
+  if (!text) return [""];
+  const lines = [];
+  for (let index = 0; index < text.length; index += maxLength) {
+    lines.push(text.slice(index, index + maxLength));
+  }
+  return lines;
+}
+
+function renderDataAnalyticsVerticalBarChartSvg(items, options = {}) {
+  const width = options.width || 720;
+  const height = options.height || 280;
+  const margin = { left: 48, right: 28, top: 24, bottom: 58 };
+  const chartWidth = width - margin.left - margin.right;
+  const chartHeight = height - margin.top - margin.bottom;
+  const maxValue = Math.max(1, ...items.map((item) => finiteNumber(item.value, 0)));
+  const barWidth = (chartWidth / Math.max(1, items.length)) * 0.56;
+  const gap = chartWidth / Math.max(1, items.length);
+  const gridValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(maxValue * ratio));
+  const gridLines = gridValues
+    .map((value) => {
+      const y = margin.top + chartHeight - (value / maxValue) * chartHeight;
+      return `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="#e5edf6" />
+        <text x="${margin.left - 8}" y="${y + 4}" text-anchor="end" fill="#7a8799" font-size="10">${htmlEscape(value)}</text>`;
+    })
+    .join("");
+  const bars = items
+    .map((item, index) => {
+      const value = finiteNumber(item.value, 0);
+      const barHeight = value ? (value / maxValue) * chartHeight : 0;
+      const x = margin.left + index * gap + (gap - barWidth) / 2;
+      const y = margin.top + chartHeight - barHeight;
+      return `<g>
+      <rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="8" fill="${item.color || "#64748b"}" />
+      <text x="${x + barWidth / 2}" y="${y - 7}" text-anchor="middle" fill="#132033" font-size="13" font-weight="900">${htmlEscape(value)}</text>
+      <text x="${x + barWidth / 2}" y="${height - 30}" text-anchor="middle" fill="#17345b" font-size="11" font-weight="800">${htmlEscape(item.label)}</text>
+      <text x="${x + barWidth / 2}" y="${height - 15}" text-anchor="middle" fill="#7a8799" font-size="10">${htmlEscape(item.caption || "")}</text>
+    </g>`;
+    })
+    .join("");
+  return `<svg class="da-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${htmlEscape(options.label || "问题严重程度分布")}">${gridLines}${bars}</svg>`;
+}
+
+function renderDataAnalyticsHorizontalBarChartSvg(items, options = {}) {
+  const width = options.width || 760;
+  const height = options.height || 300;
+  const margin = { left: options.left || 150, right: 50, top: 34, bottom: 22 };
+  const rowGap = options.rowGap || (items.length <= 4 ? 19 : 13);
+  const barHeight = options.barHeight || (items.length <= 4 ? 30 : 21);
+  const chartWidth = width - margin.left - margin.right;
+  const chartHeight = items.length * (barHeight + rowGap) - rowGap;
+  const svgHeight = Math.max(height, margin.top + chartHeight + margin.bottom);
+  const maxValue = Math.max(1, finiteNumber(options.maxValue, 0), ...items.map((item) => finiteNumber(item.value, 0)));
+  const gridValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(maxValue * ratio));
+  const gridLines = gridValues
+    .map((value) => {
+      const x = margin.left + (value / maxValue) * chartWidth;
+      return `<line x1="${x}" y1="${margin.top - 10}" x2="${x}" y2="${svgHeight - margin.bottom + 4}" stroke="#e5edf6" stroke-width="1" />
+        <text x="${x}" y="${svgHeight - 6}" text-anchor="middle" fill="#7a8799" font-size="10">${htmlEscape(value)}</text>`;
+    })
+    .join("");
+  const bars = items
+    .map((item, index) => {
+      const y = margin.top + index * (barHeight + rowGap);
+      const value = finiteNumber(item.value, 0);
+      const widthValue = Math.max(0, (value / maxValue) * chartWidth);
+      const labelLines = wrapSvgLabel(item.label, options.labelMaxLength || 10).slice(0, 2);
+      const labelText = labelLines
+        .map((line, lineIndex) => `<tspan x="${margin.left - 12}" dy="${lineIndex ? 13 : 0}">${htmlEscape(line)}</tspan>`)
+        .join("");
+      return `<g>
+      <text x="${margin.left - 12}" y="${y + barHeight / 2 - (labelLines.length > 1 ? 5 : -4)}" text-anchor="end" fill="#17345b" font-size="11" font-weight="700">${labelText}</text>
+      <rect x="${margin.left}" y="${y}" width="${chartWidth}" height="${barHeight}" rx="8" fill="#f2f6fb" />
+      <rect x="${margin.left}" y="${y}" width="${widthValue}" height="${barHeight}" rx="8" fill="${item.color || "#2155c8"}" />
+      <text x="${Math.min(margin.left + widthValue + 8, width - 26)}" y="${y + barHeight / 2 + 4}" fill="#132033" font-size="12" font-weight="800">${htmlEscape(value)}${htmlEscape(options.valueSuffix || "")}</text>
+    </g>`;
+    })
+    .join("");
+  return `<svg class="da-svg" viewBox="0 0 ${width} ${svgHeight}" role="img" aria-label="${htmlEscape(options.label || "横向柱状图")}">${gridLines}${bars}</svg>`;
+}
+
 function renderIssueCard(issue, index) {
   const view = buildCustomerIssueView(issue, index);
   return `<article class="issue-card severity-${htmlEscape(view.severity)}">
@@ -5113,16 +5261,21 @@ function renderScoreTableRows(moduleScores) {
 }
 
 function renderPdfReportHtml(task, data) {
-  const severityItems = [
-    { label: "P0", value: data.severityCounts.P0, color: "#b91c1c" },
-    { label: "P1", value: data.severityCounts.P1, color: "#dc2626" },
-    { label: "P2", value: data.severityCounts.P2, color: "#f59e0b" },
-    { label: "P3", value: data.severityCounts.P3, color: "#64748b" }
+  const analyticsSeverityItems = [
+    { label: "P0", value: data.severityCounts.P0, caption: "阻断", color: "#b91c1c" },
+    { label: "P1", value: data.severityCounts.P1, caption: "高风险", color: "#f97316" },
+    { label: "P2", value: data.severityCounts.P2, caption: "重要优化", color: "#64748b" },
+    { label: "P3", value: data.severityCounts.P3, caption: "规范化", color: "#9ca3af" }
   ];
-  const distributionItems = PDF_DIMENSIONS.map((dimension) => ({
-    label: shortDimensionTitle(dimension),
+  const analyticsDistributionItems = PDF_DIMENSIONS.map((dimension, index) => ({
+    label: dimension.title,
     value: data.issueDistribution[dimension.key] || 0,
-    color: "#1f5cc8"
+    color: PDF_DA_DIMENSION_COLORS[index % PDF_DA_DIMENSION_COLORS.length]
+  }));
+  const analyticsScoreItems = data.moduleScores.map((item, index) => ({
+    label: item.title,
+    value: item.score === null || item.score === undefined ? 0 : item.score,
+    color: PDF_DA_DIMENSION_COLORS[index % PDF_DA_DIMENSION_COLORS.length]
   }));
   const priorityIssues = data.priorityIssues.slice(0, 10);
   const fullIssues = data.reportIssues;
@@ -5146,6 +5299,27 @@ function renderPdfReportHtml(task, data) {
       <span>${htmlEscape(REPORT_TITLE)}</span>
       <span>${htmlEscape(reportDate)} · ${htmlEscape(task.id)}</span>
     </footer>
+  </section>`;
+  const dataAnalyticsPage = `<section class="page da-page">
+    <header class="page-header">
+      <div><div class="page-kicker">DATA ANALYTICS ADDENDUM</div><h2>终稿输出可视化分析</h2></div>
+      <div class="risk">03</div>
+    </header>
+    <main class="page-body">
+      <div class="da-kpi-grid">
+        <div class="da-kpi"><div class="da-kpi-label">模型综合评分</div><div class="da-kpi-value blue">${htmlEscape(scoreDisplay)}<span style="font-size:13px;color:#7a8799;"> 分</span></div><div class="da-kpi-note">${htmlEscape(scoreLabel)}</div></div>
+        <div class="da-kpi"><div class="da-kpi-label">最终问题池</div><div class="da-kpi-value">${totalIssues}</div><div class="da-kpi-note">终稿 final_issue_list</div></div>
+        <div class="da-kpi"><div class="da-kpi-label">P0 / P1</div><div class="da-kpi-value">${data.severityCounts.P0 || 0} / ${data.severityCounts.P1 || 0}</div><div class="da-kpi-note">需优先处理</div></div>
+        <div class="da-kpi"><div class="da-kpi-label">风险状态</div><div class="da-kpi-value">${htmlEscape(data.riskLevel)}</div><div class="da-kpi-note">${htmlEscape(data.reportContent.revision_workload || data.reportContent.revisionWorkload || "")}</div></div>
+      </div>
+      <div class="da-panel full"><h3>分析结论</h3><p class="da-insight">${htmlEscape(scoreRationale || data.finalJson.overall_conclusion || "本页基于终稿结构化字段生成，用于直观看到最终评分、问题严重程度和六维问题压力分布。")}</p></div>
+      <div class="da-analysis-grid">
+        <div class="da-panel"><h3>问题严重程度分布</h3>${renderDataAnalyticsVerticalBarChartSvg(analyticsSeverityItems, { label: "问题严重程度分布" })}</div>
+        <div class="da-panel"><h3>六维问题数量分布</h3>${renderDataAnalyticsHorizontalBarChartSvg(analyticsDistributionItems, { label: "六维问题数量分布", maxValue: Math.max(1, ...analyticsDistributionItems.map((item) => finiteNumber(item.value, 0))) })}</div>
+        <div class="da-panel full"><h3>六维模型评分</h3>${renderDataAnalyticsHorizontalBarChartSvg(analyticsScoreItems, { label: "六维模型评分", maxValue: 100, valueSuffix: " 分" })}</div>
+      </div>
+    </main>
+    <footer class="page-footer"><span>Data Analytics 专项可视化</span><span>${htmlEscape(reportDate)} · ${htmlEscape(task.id)}</span></footer>
   </section>`;
 
   return `<!doctype html>
@@ -5210,6 +5384,21 @@ function renderPdfReportHtml(task, data) {
     .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
     .chart-card { padding: 11px; }
     .chart-svg { width: 100%; border: 1px solid #d7e3f1; border-radius: 14px; background: #fbfdff; }
+    .da-page .page-body { display: flex; flex-direction: column; gap: 12px; }
+    .da-page h2 { color: #17345b; font-size: 22px; line-height: 1.2; font-weight: 900; margin: 2px 0 0; }
+    .da-kpi-grid { display: grid; grid-template-columns: 1.1fr 1fr 1fr 1fr; gap: 10px; }
+    .da-kpi { background: #fbfdff; border: 1px solid #d7e3f1; border-radius: 12px; padding: 11px 12px; box-shadow: 0 4px 12px rgba(19,32,51,0.04); }
+    .da-kpi-label { color: #6b7b92; font-size: 10px; font-weight: 800; letter-spacing: .06em; }
+    .da-kpi-value { color: #17345b; font-size: 22px; line-height: 1.12; font-weight: 900; margin-top: 5px; }
+    .da-kpi-value.blue { color: #2155c8; font-size: 32px; }
+    .da-kpi-note { color: #7a8799; font-size: 10px; margin-top: 4px; }
+    .da-analysis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+    .da-panel { background: #fbfdff; border: 1px solid #d7e3f1; border-radius: 13px; padding: 12px; box-shadow: 0 4px 12px rgba(19,32,51,0.04); }
+    .da-panel.full { grid-column: 1 / -1; }
+    .da-panel h3 { margin: 0 0 7px; color: #17345b; font-size: 14px; }
+    .da-panel p { margin: 0; color: #516277; }
+    .da-svg { width: 100%; display: block; background: #ffffff; border: 1px solid #e2eaf4; border-radius: 11px; }
+    .da-insight { border-left: 4px solid #2155c8; padding-left: 10px; color: #516277; }
     table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 0; overflow: hidden; border: 1px solid #d7e3f1; border-radius: 12px; background: #ffffff; }
     th, td { border-bottom: 1px solid #e4ecf6; padding: 8px 9px; vertical-align: top; }
     tr:last-child td { border-bottom: 0; }
@@ -5309,24 +5498,7 @@ function renderPdfReportHtml(task, data) {
       <tbody>${renderScoreTableRows(data.moduleScores)}</tbody>
     </table>`)}
 
-  ${pageFrame("03", "问题分布与风险结构", "按严重程度和六个审查维度呈现最终问题池，帮助判断修订工作量。",
-  `<div class="chart-row">
-      <div class="chart-card">
-        <h3>严重程度分布</h3>
-        ${renderBarChartSvg(severityItems, { label: "严重程度分布" })}
-      </div>
-      <div class="chart-card">
-        <h3>六维度问题数量</h3>
-        ${renderBarChartSvg(distributionItems, { label: "六维度问题数量" })}
-      </div>
-    </div>
-    <div class="metric-grid">
-      <div class="metric metric-p0"><div class="label">P0</div><div class="value">${data.severityCounts.P0 || 0}</div></div>
-      <div class="metric metric-p1"><div class="label">P1</div><div class="value">${data.severityCounts.P1 || 0}</div></div>
-      <div class="metric metric-p2"><div class="label">P2</div><div class="value">${data.severityCounts.P2 || 0}</div></div>
-      <div class="metric metric-p3"><div class="label">P3</div><div class="value">${data.severityCounts.P3 || 0}</div></div>
-      <div class="metric"><div class="label">优先项</div><div class="value">${priorityIssues.length}</div></div>
-    </div>`)}
+  ${dataAnalyticsPage}
 
   ${pageFrame("04", "优先处理问题", "以下问题按投稿前处理优先级排列，建议先完成这些修订，再处理其余优化项。",
   `${priorityIssues.length ? priorityIssues.map(renderIssueCard).join("") : `<div class="note">未锁定需要优先处理的问题。</div>`}`)}
