@@ -1,14 +1,13 @@
 import crypto from "node:crypto";
 
-export const PROMPT_ADAPTER_VERSION = "runtime-adapter.v7.20260527-compact-adjudication";
+export const PROMPT_ADAPTER_VERSION = "runtime-adapter.v10.20260614-v3-txt-sidecar-six-score";
 
 const REVIEW_STAGES = [
-  { key: "selection_innovation", title: "选题创新预审", prefix: "A1", dimension: "选题创新性" },
-  { key: "clinical_methods", title: "临床方法预审", prefix: "A2", dimension: "研究设计与临床逻辑" },
-  { key: "statistical_results", title: "统计结果预审", prefix: "A3", dimension: "统计分析与证据支撑" },
-  { key: "numerical_audit", title: "数值审计预审", prefix: "A4", dimension: "数据一致性" },
-  { key: "figure_table_visual_audit", title: "图表与视觉材料审计", prefix: "A5", dimension: "图表质量与呈现完整性" },
-  { key: "submission_safety_expression", title: "投稿安全与表达预审", prefix: "A6", dimension: "投稿合规与成稿完整性" }
+  { key: "topic_innovation_rationale", title: "Agent 1 选题创新及合理性", prefix: "A1", dimension: "选题创新及合理性" },
+  { key: "statistical_details", title: "Agent 2 统计学细节", prefix: "A2", dimension: "统计学细节" },
+  { key: "fulltext_consistency_numerical_audit", title: "Agent 3 全文一致性与数值审计结果", prefix: "A3", dimension: "全文一致性与数值审计" },
+  { key: "figure_table_quality", title: "Agent 4 图表质量与呈现完整性", prefix: "A4", dimension: "图表质量与呈现完整性" },
+  { key: "misc_compliance_expression", title: "Agent 5 杂项与投稿安全表达", prefix: "A5", dimension: "杂项、合规与表达" }
 ];
 
 function sha256(value) {
@@ -19,23 +18,30 @@ function stageInfo(stageKey) {
   return REVIEW_STAGES.find((stage) => stage.key === stageKey);
 }
 
-function globalAdapter() {
-  return `【程序适配层：全局底座】
-本段由系统在运行时追加，用于保护后台解析和报告生成链路；它不替代你在后台维护的自然语言提示词。若自然语言提示词与本段在输出字段、JSON 结构或禁止事项上冲突，以本段为准；医学判断、审稿深度和具体问题识别仍优先遵守自然语言提示词。
-
-1. 必须只基于本次输入材料判断，包括任务信息、客户信息、artifact_manifest、图片审阅清单、文稿全文，以及当前调用点明确提供的阶段结果。不得编造文稿不存在的信息。
-2. 所有问题必须有可复核依据，优先引用可搜索原文短句、章节小节、图表编号、表题、图注、变量名、数字、声明区字段或 artifact_manifest 线索。
-3. P0/P1 不得因不确定而遗漏；证据不足但风险较高时保留并标注“需人工复核”。低价值 P3 严格少列。
-4. 坚持最小修稿原则，优先给出低成本处理动作：补充 Methods 关键细节、统一数字、补充图表/图注/表题、弱化结论、限定外推、补充伦理/注册/数据声明、删除高风险表达。
-5. 每个 Agent 必须严守本阶段职责边界；比较器只比较两轮输出；裁决者只裁定六 Agent 已提出的问题；终稿输出只做客户版组织和表达。`;
+function sharedEvidenceRules() {
+  return `【通用证据与边界规则】
+1. 只能基于本次输入材料判断，包括任务信息、客户信息、artifact_manifest、可审阅图片清单、文稿全文，以及当前调用点明确提供的上游结果。不得编造文稿中不存在的信息。
+2. 每条问题必须有可复核依据，优先引用可搜索原文短句、章节小节、图表编号、表题、图注、变量名、数字、声明区字段或 artifact_manifest 线索。
+3. P0/P1 不得因不确定而遗漏；证据不足但风险较高时保留并标注“需人工复核”。P3 严格少列。
+4. 坚持最小修稿原则，优先给出低成本处理动作：补充关键说明、统一数字、补充图表/图注/表题、弱化结论、限定外推、补充伦理/注册/数据声明、删除高风险表达。
+5. 本阶段必须严守职责边界；不得主动扩展到其他 Agent、清洁员或裁决者参数职责。`;
 }
 
 function agentAdapter(info) {
   return `【程序适配层：${info.title} 输出契约】
-本段只规定程序可解析输出和最低质量线，不改变前文自然语言提示词的审稿方向。必须返回严格 JSON，禁止 Markdown 代码块，禁止 JSON 之外文字。
+本段只规定程序可解析输出和最低质量线，不改变前文自然语言提示词的审稿方向。若前文要求固定 TXT、不得输出 JSON、不得输出表格，以固定 TXT 正文为主体；但为了后台稳定解析，必须在 TXT 正文之后额外附加一段 sidecar：agent_report JSON。不要把 JSON 混入 TXT 正文。
 
-输出顶层结构：
+${sharedEvidenceRules()}
+
+必须输出两个连续段落，禁止 Markdown 代码块：
+
+${info.prefix}_审稿结果.txt:
+按前文自然语言提示词要求输出固定 TXT 正文。每条正式问题应保留编号、问题标题、风险等级、依据/精准定位、问题及投稿风险、低成本处理方向。若前文要求只输出 P0/P1/P2，则 TXT 正文按前文执行。
+
+agent_report JSON:
 {
+  "schema_version": "v3.agent_report.v1",
+  "stage": "${info.key}",
   "issues": [],
   "positive_findings": [],
   "review_summary": "本阶段简要结论"
@@ -51,121 +57,121 @@ issues 数组中每个问题对象必须包含：
 - "issue_narrative": "自然语言完整审稿正文"
 - "confidence": 0.8
 
-可选增强字段：risk_analysis、evidence_quotes、revision_path。若输出这些字段，必须与 issue_narrative 一致。
+可选增强字段：risk_analysis、submission_risk、evidence_quotes、revision_path。若输出这些字段，必须与 issue_narrative 一致。
+
+agent_report JSON 是后台 sidecar，不是客户正文，不违背前文“TXT 主体、不使用表格”的要求。它必须忠实映射 TXT 中的问题，不得新增 TXT 中没有的问题，不得删减 P0/P1/P2 问题。
 
 issue_narrative 必须按以下中文结构组织：问题编号、问题短标题、风险等级、依据、问题及投稿风险、低成本处理方向。P0/P1 目标 250-600 中文字符，必须解释为什么编辑或外审会质疑、影响哪类投稿判断、最低成本怎么处理；P2 目标 150-350 中文字符；P3 只列确有价值的问题。
 
 evidence 不得只写一句概括。必须尽量包含能在文稿中搜索到的原文短句、图表/表格编号、变量名、数字或图注片段。recommendation 不得写“建议完善/优化/补充”这类空泛句，必须说明补充到哪个章节、统一哪些数字、如何降调结论、是否补表/补图/补敏感性说明。
 
-若本阶段未发现值得列出的问题，返回：
-{ "issues": [], "positive_findings": [], "review_summary": "本 Agent 在本职能范围内未发现值得列出的具体问题。" }`;
+若本阶段未发现值得列出的问题，TXT 正文写明本 Agent 在本职能范围内未发现值得列出的具体问题，并在 agent_report JSON 中返回：
+{ "schema_version": "v3.agent_report.v1", "stage": "${info.key}", "issues": [], "positive_findings": [], "review_summary": "本 Agent 在本职能范围内未发现值得列出的具体问题。" }`;
 }
 
-function comparatorAdapter() {
-  return `【程序适配层：一致性比较器输出契约】
-本段只规定程序可解析输出。你只比较同一 Agent 的 run_1 与 run_2，不重新审稿，不新增两轮均未提出的问题。单轮出现且证据明确的 P0/P1 必须保留。
+function cleanerAdapter() {
+  return `【程序适配层：清洁员输出契约】
+清洁员只读取 5 个 Agent 的报告，负责汇总、去重、清洗、编号、归类和客户可读化；不得读取原始 Word、文稿全文或任何原文档派生材料；不得重新审稿，不得新增 5 个 Agent 均未提出的问题，不得删除高风险问题。
 
-必须返回严格 JSON，顶层只能包含：
+若前文自然语言提示词要求“纯文本、不使用 JSON”，该要求只约束客户/人工可读的“问题清单.txt”正文。为了让后台稳定生成 Word/PDF，你仍必须在“问题清单.txt”之后额外附加一段 sidecar：issue_list JSON。不要把 JSON 混入问题清单正文。
+
+必须输出两个连续段落，禁止 Markdown 代码块：
+
+问题清单.txt:
+一份可直接给人工阅读的问题清单。每条问题至少包含：问题编号、级别、归属维度、问题标题、精确定位、为什么是问题、投稿风险、低成本处理建议、来源 Agent。语言可以自然，但必须保留 Agent 原始审稿意见的信息密度。
+
+issue_list JSON:
 {
-  "consistency": {
-    "run1IssueCount": 0,
-    "run2IssueCount": 0,
-    "mergedIssueCount": 0,
-    "overlapIssueCount": 0,
-    "overallOverlapRate": 0,
-    "run1P0P1Count": 0,
-    "run2P0P1Count": 0,
-    "mergedP0P1Count": 0,
-    "overlapP0P1Count": 0,
-    "p0p1OverlapRate": 0,
-    "onlyInRun1": [],
-    "onlyInRun2": [],
-    "overlapIssues": [],
-    "severityChanged": [],
-    "notes": ""
-  },
-  "mergedIssues": []
-}
-
-重合度使用 0-1 小数；分母为 0 时写 1，并在 notes 说明无可比较问题。mergedIssues 每条必须保留 severity、category、issue、evidence、location、recommendation、confidence、source_runs，可保留 source_issue_ids。
-
-若 run_1 或 run_2 中有 issue_narrative、risk_analysis、evidence_quotes、revision_path，mergedIssues 必须保留或重写这些字段，不得压缩成一句话。合并版 issue 使用 M 编号，例如 A2-M01｜具体问题短标题。`;
-}
-
-function adjudicatorAdapter() {
-  return `【程序适配层：裁决者裁定紧凑输出契约】
-本段只规定程序可解析外壳，不改变前文自然语言提示词要求的终审裁决逻辑和审稿强度。裁决者不是第 7 个审稿 Agent，不新增六 Agent 均未提出的独立问题；只对六 Agent 合并问题清单进行复核、去重、合并、升级/降级、排除和优先级排序。裁决者只运行一次。
-
-重要：裁决者只输出“紧凑裁定 JSON”，不要输出客户报告正文，不要输出 report_text、report_sections、Markdown 或 JSON 之外文字。完整问题正文由后端从六 Agent 合并问题清单中物化生成；你只需要说明每个候选问题被保留、合并或排除，以及最终问题池的 ID、级别、维度和必要改写。
-
-顶层结构：
-{
-  "adjudication_summary": "200字以内裁决摘要",
-  "overall_judgment": {
-    "submission_recommendation": "暂不建议投稿，需先处理阻断级问题|暂不建议直接投稿，完成关键修订后可进入投稿阶段|基本具备投稿基础，建议先完成定向优化|整体较成熟，可进入投稿准备阶段",
-    "risk_level": "低风险|中等风险|中高风险|高风险|极高风险",
-    "revision_workload": "小修|中修|大修",
-    "revision_workload_reason": "一句话说明"
-  },
-  "final_issue_decisions": [],
-  "priority_issue_ids": [],
-  "source_issue_coverage": [],
-  "adjudication_decisions": [],
-  "excluded_issues": [],
+  "schema_version": "v3.issue_list.v1",
+  "issue_count": 0,
   "severity_counts": { "P0": 0, "P1": 0, "P2": 0, "P3": 0, "total": 0 },
   "issue_distribution": {},
-  "consistency_metrics": { "overall_notes": "", "agent_metrics": [], "low_consistency_risks": [] },
-  "artifact_quality_summary": { "image_count": 0, "table_count": 0, "caption_count": 0, "image_extraction_status": "", "quality_flags": [], "review_limitation": "" },
+  "issues": []
+}
+
+issues 每条必须包含：
+{
+  "id": "IL-001",
+  "severity": "P0|P1|P2|P3",
+  "category": "topic_innovation_rationale|statistical_details|fulltext_consistency_numerical_audit|figure_table_quality|misc_compliance_expression|cross_agent",
+  "primary_dimension": "选题创新及合理性|统计学细节|全文一致性与数值审计|图表质量与呈现完整性|杂项、合规与表达",
+  "issue": "具体问题标题",
+  "location": "可搜索原文片段/章节/图表/表格/变量/数字",
+  "explanation": "为什么是问题",
+  "submission_risk": "投稿风险",
+  "recommendation": "低成本处理建议",
+  "source_agents": ["topic_innovation_rationale"],
+  "source_issue_ids": ["A1-01"],
+  "issue_narrative": "继承或整合后的完整自然语言审稿正文",
+  "confidence": 0.8
+}`;
+}
+
+function adjudicatorParametersAdapter() {
+  return `【程序适配层：裁决者参数输出契约】
+裁决者参数 Agent 只读取 Word 文稿和清洁员生成的问题清单，输出评分、优先级、投稿判断和 PDF/Word 页面级文本参数；不得输出长篇问题正文，不得删改问题清单，不得重新生成完整问题池。issue_list JSON 只作为问题 ID、级别、维度和后台解析锚点，不能替代“问题清单.txt”的长文本判断。
+
+若前文自然语言提示词要求输出“裁决报告.txt”，系统统一将其归一保存为“结论参数.txt”；两者是同一类裁决参数文本。V3 当前采用六维评分：选题价值、研究设计、统计分析、数据可信、图表呈现、写作表达。若前文出现“五维评分/五维诊断”，以本段六维为准。
+
+P3 不参与综合评分、六维评分和 Top 10/优先问题排序；但 P3 仍应保留在上游“问题清单.txt / issue_list JSON”中，供最终完整问题清单和投稿前杂项检查使用。不要因为 P3 不参与评分而要求清洁员删除 P3。
+
+必须输出两个连续段落，禁止 Markdown 代码块：
+
+结论参数.txt:
+面向人工阅读的参数摘要，包含综合评分、六维评分、风险等级、修订工作量、投稿建议、优先处理问题 ID、主要短板、主要优势、摘要、总体结论和页面级报告导语。不要展开每条问题正文。
+
+conclusion_parameters JSON:
+{
+  "schema_version": "v3.conclusion_parameters.v1",
+  "summary": "200字以内摘要",
+  "overall_conclusion": "客户可读总体预审结论",
+  "overall_score": 0,
+  "overall_score_label": "暂不建议投稿|大修后可投稿|勉强达到可投稿水平|投稿准备较成熟",
+  "overall_score_rationale": "客户可读评分理由，不写机械扣分公式",
+  "dimension_scores": [
+    { "key": "topic_value", "title": "选题价值", "score": 0, "rationale": "一句话理由" },
+    { "key": "study_design", "title": "研究设计", "score": 0, "rationale": "一句话理由" },
+    { "key": "statistical_analysis", "title": "统计分析", "score": 0, "rationale": "一句话理由" },
+    { "key": "data_credibility", "title": "数据可信", "score": 0, "rationale": "一句话理由" },
+    { "key": "figure_presentation", "title": "图表呈现", "score": 0, "rationale": "一句话理由" },
+    { "key": "writing_expression", "title": "写作表达", "score": 0, "rationale": "一句话理由" }
+  ],
+  "submission_recommendation": "",
+  "risk_level": "低风险|中等风险|中高风险|高风险|极高风险",
+  "revision_workload": "小修|中修|大修",
+  "priority_issue_ids": [],
   "manuscript_strengths": [],
   "major_weaknesses": [],
-  "dimension_diagnosis": {}
+  "dimension_diagnosis": {},
+  "pre_submission_checklist": [],
+  "pdf_text_set": {
+    "cover_subtitle": "封面副标题",
+    "overview_lead": "一页式总览导语",
+    "score_interpretation": "评分解读，不写扣分公式",
+    "strengths_intro": "优势导语",
+    "weaknesses_intro": "短板导语",
+    "priority_issues_intro": "优先问题页导语",
+    "full_issue_list_intro": "完整问题清单页导语",
+    "checklist_intro": "检查清单导语",
+    "closing_note": "报告收束语"
+  },
+  "artifact_completion_summary": {
+    "overview": "投稿材料规范摘要",
+    "key_risks": [],
+    "recommended_actions": []
+  }
 }
 
-final_issue_decisions 是最终问题池的紧凑决策表。每条记录必须包含：
-{
-  "id": "JR-001",
-  "action": "keep|merge|upgrade|downgrade",
-  "severity": "P0|P1|P2|P3",
-  "category": "selection_innovation|clinical_methods|statistical_results|numerical_audit|figure_table_visual_audit|submission_safety_expression|cross_agent",
-  "primary_dimension": "选题创新性|研究设计与临床逻辑|统计分析与证据支撑|数据一致性|图表质量与呈现完整性|投稿合规与成稿完整性",
-  "issue": "最终问题短标题；可轻微改写，不得改变含义",
-  "source_issue_ids": ["selection_innovation:A1-M01"],
-  "reason": "为什么保留、合并、升级或降级",
-  "severity_before": "P1",
-  "severity_after": "P1"
+评分是模型模糊评分，不写扣分公式。存在 P0 时综合评分原则上低于 60；大修稿通常低于 70；70 分以上表示勉强达到可投稿准备水平。priority_issue_ids 必须引用 issue_list JSON 中的 id。
+
+summary、overall_conclusion、pdf_text_set、pre_submission_checklist 和 artifact_completion_summary 将直接进入客户版 Word/PDF。语言必须自然、客户友好，不得出现 source_runs、runner_metadata、artifact_manifest、prompt、token、latency、JSON key 裸露、模型过程或内部调试词。artifact_completion_summary 应聚焦 Title page、Declarations、伦理/知情同意、References、STROBE checklist、补充材料、图表编号闭合、投稿系统材料等客户需要补齐的事项；若问题清单中没有相关 P0-P2 问题，可简要说明未锁定重点风险，不要编造。`;
 }
 
-不要在 final_issue_decisions 中复写长篇 issue_narrative、完整问题说明或完整修改建议；这些内容由后端从 source_issue_ids 指向的 Agent 合并问题中继承。只有当标题、级别、维度或建议需要轻微改写时，才填写 issue、severity、category、primary_dimension、recommendation_override、location_override。
+function finalReportAdapter() {
+  return `【程序适配层：终稿报告输出契约】
+终稿 Agent 严格只读取“问题清单.txt”和“结论参数.txt”，生成后端可渲染为客户版 Word/PDF 的报告内容 JSON。你不直接读取论文全文、artifact_manifest、issue_list JSON 或 conclusion_parameters JSON；不重新审稿，不删减问题，不合并问题，不改变评分。完整问题正文由后端根据 issue_list JSON 物化，你只负责客户版页面文本和报告组织。
 
-source_issue_coverage 是强制覆盖表，必须逐条覆盖输入的 6 个 Agent 合并问题清单中的每一个问题。每条覆盖记录必须包含：
-{
-  "source_stage": "selection_innovation|clinical_methods|statistical_results|numerical_audit|figure_table_visual_audit|submission_safety_expression",
-  "source_issue_id": "原合并问题编号，例如 A2-M01；若无编号，使用原问题标题前 30 字",
-  "source_issue_title": "原合并问题标题",
-  "source_severity": "P0|P1|P2|P3",
-  "action": "kept_as|merged_into|excluded",
-  "target_issue_id": "若 kept_as 或 merged_into，填写 final_issue_list 中对应 id；若 excluded，留空",
-  "reason": "保留、合并或排除的裁决理由"
-}
-
-不得无记录丢弃任何来源问题。只有“同一定位、同一投稿风险、同一低成本修改动作”的重复问题才允许 merged_into；同一根因但定位、风险或修改动作不同的问题必须保留为独立客户可执行问题。P0/P1 若 excluded，reason 必须说明原文复核后证据不足、与其他问题完全重复且已完整覆盖、或原风险等级不成立；不得只写“重复/不重要/已合并”。如果最终问题数低于输入中的参考基线或上一版裁决结果，必须在 source_issue_coverage 与 adjudication_decisions 中逐条说明所有减少项的去向。
-
-候选项基线保真阈值：当 6 个 Agent 合并问题清单的候选项总数不少于 10 项时，final_issue_decisions 原则上不得低于候选项总数的 65%。例如 36 项候选至少应保留 24 项；26 项属于可接受的轻度压缩，16/17 项属于疑似过度压缩。若当前输出低于 65%，不要只补充解释，而应优先恢复被过度合并的问题、拆回不同定位/不同风险/不同修改动作的子问题，或逐项重裁后再输出。
-
-priority_issue_ids 必须是 final_issue_decisions 中 id 的 5-10 条优先子集。severity_counts 与 issue_distribution 必须以 final_issue_decisions 为口径。P0/P1 被排除时，excluded_issues.exclusion_reason 必须写清楚原文复核理由。裁决者不得输出最终数值评分；评分由终稿输出阶段完成。`;
-}
-
-function finalAdapter() {
-  return `【程序适配层：终稿输出报告层 JSON 契约】
-本段只规定程序可解析外壳和客户版屏蔽规则，不改变前文自然语言提示词要求的客户版报告母稿风格、章节逻辑、语言强度和信息密度。终稿输出不是重新审稿；若输入有 adjudicator_review JSON，必须以裁决者结果为唯一事实来源。若暂未提供裁决者结果，只能基于六 Agent 合并清单做最小必要报告化表达，不得新增六 Agent 均未提出的独立问题。
-
-重要：终稿输出只负责报告层判断、客户版摘要、模型模糊评分和优先问题 ID 排序，不需要重复输出完整问题正文。完整 report_content.final_issue_list 和 final_review_text 将由后端根据裁决者问题池物化生成。必须只返回严格 JSON，禁止 Markdown，禁止 JSON 之外文字。
-
-final_review_text 可以输出报告总览正文，但不得写“具体见 report_content.priority_actions”“完整问题清单见 final_issue_list”“优先问题见结构化字段”等引用式句子。若你不确定完整问题正文如何展开，可将 final_review_text 写成总体判断和修订路径；后端会自动补全优先问题和完整问题清单。
-
-如果输入提供 adjudicator_review.final_issue_list 或 final_issue_decisions，则 report_content.priority_issue_ids 必须引用这些最终问题 id；不得在终稿阶段二次合并、删减、拆分、重排或降低严重程度。终稿不得输出少于裁决者的问题池；如只输出 priority_issue_ids，后端会自动补全完整问题池。
-
-8 个基础字段必须存在：
+必须返回严格 JSON，禁止 Markdown 代码块，禁止 JSON 之外文字。8 个基础字段必须存在：
 {
   "summary": "200字以内摘要",
   "overall_conclusion": "总体预审结论",
@@ -176,7 +182,7 @@ final_review_text 可以输出报告总览正文，但不得写“具体见 repo
   "pre_submission_checklist": [],
   "final_review_text": "完整报告正文",
   "report_content": {
-    "source": "adjudicator_review|agent_merged_issue_lists",
+    "source": "v3_issue_list_cleaner",
     "submission_recommendation": "",
     "risk_level": "",
     "revision_workload": "",
@@ -187,51 +193,41 @@ final_review_text 可以输出报告总览正文，但不得写“具体见 repo
     "major_weaknesses": [],
     "score_summary": {
       "overall_score": 0,
-      "overall_score_10": 0,
-      "overall_score_text": "X.X / 10",
-      "overall_score_label": "暂不建议投稿|大修后可投稿|勉强达到可投稿水平|投稿准备较成熟",
-      "overall_score_rationale": "客户可读综合评分理由，不写机械扣分规则",
-      "dimension_scores": [
-        { "key": "selection_innovation", "title": "选题创新性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "clinical_methods", "title": "研究设计与临床逻辑", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "statistical_results", "title": "统计分析与证据支撑", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "numerical_audit", "title": "数据一致性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "figure_table_visual_audit", "title": "图表质量与呈现完整性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "submission_safety_expression", "title": "投稿合规与成稿完整性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" }
-      ]
+      "overall_score_label": "",
+      "overall_score_rationale": "",
+      "dimension_scores": []
     },
     "priority_issue_ids": [],
     "priority_actions": [],
     "final_issue_list": [],
-    "report_sections": {},
+    "pdf_text_set": {
+      "cover_subtitle": "面向临床 SCI 投稿前的结构化质控、风险定位与修改优先级建议",
+      "overview_lead": "一页式总览导语",
+      "score_interpretation": "评分解读，不写扣分公式",
+      "strengths_intro": "稿件优势导语",
+      "weaknesses_intro": "主要短板导语",
+      "priority_issues_intro": "优先处理问题页导语",
+      "full_issue_list_intro": "完整问题清单页导语",
+      "checklist_intro": "投稿前检查清单导语",
+      "closing_note": "报告收束语"
+    },
     "artifact_completion_summary": { "overview": "", "key_risks": [], "recommended_actions": [] }
   }
 }
 
-客户版屏蔽规则：summary、overall_conclusion、must_fix、suggested_fix、text_and_figure_comments、compliance_risk、pre_submission_checklist、final_review_text、report_content 中不得出现扣分公式、评分规则、双跑一致性、重合度、run_1/run_2、source_runs、source_issue_ids、Python、artifact_manifest、图片 ID、extracted_path、prompt、token、latency、模型过程等内部调试信息。真实风险必须转成客户可理解表述。
+report_content.score_summary 必须忠实继承“结论参数.txt”中的综合评分和维度评分；不得自行调分。priority_actions 只能根据“结论参数.txt”中的优先问题 ID 和“问题清单.txt”的对应问题生成客户友好摘要；不得改变优先级。final_issue_list 如无法从 TXT 稳定完整复写，可以返回空数组或简要占位，后端会用 issue_list JSON 物化完整问题池，不得编造或压缩问题。
 
-评分映射规则：若裁决者输入给出 X.X / 10 的总体评分或六维评分，必须忠实继承其 10 分制含义，并在 score_summary 中同时输出：
-1. overall_score_10 / dimension_scores[].score_10：原始 10 分制数字。
-2. overall_score_text / dimension_scores[].score_text：原始 X.X / 10 文本。
-3. overall_score / dimension_scores[].score：供程序绘图使用的百分制整数，等于 10 分制数字乘以 10 后四舍五入。
-如果上游已经给出百分制，可直接继承百分制，但不得改变裁决者的实质评分判断。overall_score_rationale 和 dimension_scores[].rationale 必须是客户可读综合判断，不写机械扣分公式，也不写“按 P0/P1/P2/P3 扣多少分”。
-如果上游没有给出评分，仍必须基于裁决者最终问题池、六维表现、P0/P1 严重度、可修复性和成稿完整度自行给出模型模糊评分。不得写“未稳定提供”“未在输入材料中提供”“当前仅能依据问题分布判断”“无法评分”等占位语，也不得保留 schema 示例中的 0 分占位。
+report_content.artifact_completion_summary 在 V3 中用于“投稿材料规范摘要”，不是流程状态总结。它必须聚焦 Title page、Declarations、伦理/知情同意、References、STROBE checklist、补充材料、图表编号闭合、投稿系统材料等客户需要补齐的事项；不得写“已整理报告内容”“保留综合评分”“不重新审稿”“后端渲染”等流程性话术。若问题清单中没有相关问题，可简要写“未锁定单独的投稿材料规范问题”，不要编造。
 
-priority_issue_ids 输出 5-10 条优先处理问题 id；若最终问题不足 5 条则按实际数量。priority_actions 可只输出简短客户提示或留空；final_issue_list 可留空或只输出 id 引用，后端将从裁决者问题池补全完整问题正文。若你输出 priority_actions 或 final_issue_list，不得包含 source_runs、source_issue_ids、runner_metadata、artifact_manifest、report_text 等内部来源字段。
-
-【终稿全链路保真要求】
-1. 终稿输出不是二次裁决器，不得减少裁决者最终问题池。
-2. 客户友好不等于压缩，不得将总体结论改写为“影响可信度”“建议完善”“需进一步说明”等泛泛表达。
-3. 优先问题只能通过 priority_issue_ids 排序；完整问题正文由后端继承 Agent 原始长意见。`;
+pdf_text_set 是 PDF/Word 的页面级文本集，只写客户可读导语、总览、评分解读、优势短板说明、优先问题说明、检查清单说明和收束语；不要在其中展开内部流程。客户字段不得出现 source_runs、runner_metadata、artifact_manifest、prompt、token、latency、JSON key 裸露、模型过程或内部调试词。`;
 }
 
 export function getPromptAdapter(stageKey) {
   const info = stageInfo(stageKey);
   if (info) return agentAdapter(info);
-  if (stageKey === "global_system") return globalAdapter();
-  if (stageKey === "consistency_comparator") return comparatorAdapter();
-  if (stageKey === "adjudicator_review") return adjudicatorAdapter();
-  if (stageKey === "final_adjudication") return finalAdapter();
+  if (stageKey === "issue_list_cleaner") return cleanerAdapter();
+  if (stageKey === "adjudicator_parameters") return adjudicatorParametersAdapter();
+  if (stageKey === "final_report_output") return finalReportAdapter();
   return "";
 }
 

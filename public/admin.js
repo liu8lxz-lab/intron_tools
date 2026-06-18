@@ -30,12 +30,11 @@ const manualSkillOutput = document.querySelector("#manualSkillOutput");
 const manualModel = document.querySelector("#manualModel");
 
 const reviewStages = [
-  { key: "selection_innovation", title: "选题创新预审" },
-  { key: "clinical_methods", title: "临床方法预审" },
-  { key: "statistical_results", title: "统计结果预审" },
-  { key: "numerical_audit", title: "数值审计预审" },
-  { key: "figure_table_visual_audit", title: "图表与视觉材料审计" },
-  { key: "submission_safety_expression", title: "投稿安全与表达预审" }
+  { key: "topic_innovation_rationale", title: "Agent 1 选题创新及合理性" },
+  { key: "statistical_details", title: "Agent 2 统计学细节" },
+  { key: "fulltext_consistency_numerical_audit", title: "Agent 3 全文一致性与数值审计结果" },
+  { key: "figure_table_quality", title: "Agent 4 图表质量与呈现完整性" },
+  { key: "misc_compliance_expression", title: "Agent 5 杂项与投稿安全表达" }
 ];
 
 let activeManualTaskId = "";
@@ -160,17 +159,23 @@ function renderManualPanel(task) {
 
 function buildSkillPackageText(task) {
   const stageOutputs = task.stageOutputs || [];
+  const issueListText = task.issueListText || "";
+  const conclusionParametersText = task.conclusionParametersText || "";
   const finalOutput = task.finalOutput?.output || "";
-  if (!stageOutputs.length && !finalOutput) return "";
+  if (!stageOutputs.length && !issueListText && !conclusionParametersText && !finalOutput) return "";
 
   const stageText = reviewStages
-    .map((stage) => {
+    .map((stage, index) => {
       const output = stageOutputs.find((item) => item.stage === stage.key)?.output || "";
-      return `${stage.key}:\n${output}`;
+      return `agent${index + 1}.txt:\n${output}`;
     })
     .join("\n\n");
 
-  return `${stageText}\n\nfinal_adjudication JSON:\n${finalOutput}`.trim();
+  const parts = [stageText];
+  if (issueListText) parts.push(`问题清单.txt:\n${issueListText}`);
+  if (conclusionParametersText) parts.push(`裁决者参数.txt:\n${conclusionParametersText}`);
+  if (finalOutput) parts.push(`final_report JSON:\n${finalOutput}`);
+  return parts.filter((item) => item && item.trim()).join("\n\n").trim();
 }
 
 async function openManualPanel(taskId) {
@@ -437,6 +442,16 @@ async function loadTasks() {
     .map((task) => {
       const summary = task.error || task.summary || task.manualReason || "";
       const isHistorical = historicalTaskStatuses.has(task.status);
+      const hasV4Sources = task.issueListAvailable || task.conclusionParametersAvailable;
+      const downloadButtons = hasV4Sources
+        ? `
+              ${task.issueListAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/issue-list/download"><button class="secondary compact" type="button">问题清单</button></a>` : ""}
+              ${task.conclusionParametersAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/adjudicator-parameters/download"><button class="secondary compact" type="button">裁决参数</button></a>` : ""}
+              ${task.pdfReportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report.pdf"><button class="secondary compact" type="button">PDF报告</button></a>` : ""}`
+        : `
+              <a href="/api/v1/admin/review-tasks/${task.id}/stage-outputs/download"><button class="secondary compact" type="button">阶段输出</button></a>
+              ${task.reportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report"><button class="secondary compact" type="button">Word报告</button></a>` : ""}
+              ${task.pdfReportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report.pdf"><button class="secondary compact" type="button">PDF报告</button></a>` : ""}`;
       return `
         <tr>
           <td><code>${task.id}</code></td>
@@ -446,9 +461,7 @@ async function loadTasks() {
           <td>创建：${escapeHtml(task.createdAt || "")}<br />更新：${escapeHtml(task.updatedAt || "")}</td>
           <td>
             <div class="actions">
-              <a href="/api/v1/admin/review-tasks/${task.id}/stage-outputs/download"><button class="secondary compact" type="button">阶段输出</button></a>
-              ${task.reportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report"><button class="secondary compact" type="button">Word</button></a>` : ""}
-              ${task.pdfReportAvailable ? `<a href="/api/v1/admin/review-tasks/${task.id}/report.pdf"><button class="secondary compact" type="button">PDF</button></a>` : ""}
+              ${downloadButtons}
               <button class="secondary compact" data-manual-task="${task.id}" type="button">人工代跑</button>
               ${isHistorical ? `<button class="compact" data-retry-task="${task.id}" type="button">重试</button>` : ""}
               ${isHistorical ? `<button class="danger compact" data-delete-task="${task.id}" type="button">删除</button>` : `<button class="danger compact" data-cancel-task="${task.id}" type="button">取消</button>`}
@@ -564,7 +577,7 @@ document.querySelector("#saveManualSkillOutput").addEventListener("click", async
       body: JSON.stringify({ model: manualModel.value.trim(), packageText })
     });
     renderManualPanel(task);
-    setMessage(taskMessage, "skills 输出已导入，Word 报告已生成。", "ok");
+    setMessage(taskMessage, "skills 输出已导入，Word/PDF 报告已生成。", "ok");
     await loadTasks();
   } catch (error) {
     setMessage(taskMessage, error.message, "error");

@@ -6,7 +6,7 @@
     <title>投稿前预审质控系统</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="user-page">
     <div class="page">
       <header class="topbar">
         <div class="brand">
@@ -19,6 +19,28 @@
       </header>
 
       <main class="container">
+        <section class="page-intro">
+          <div>
+            <p class="eyebrow">Clinical SCI Pre-review</p>
+            <h1>投稿前预审质控工作台</h1>
+            <p>面向临床 SCI 稿件的结构化预审入口，提交 Word 文稿后生成摘要、质控结论和可下载报告。</p>
+          </div>
+          <div class="intro-metrics" aria-label="系统能力概览">
+            <div>
+              <strong>5</strong>
+              <span>审稿维度</span>
+            </div>
+            <div>
+              <strong>DOCX</strong>
+              <span>当前支持</span>
+            </div>
+            <div>
+              <strong>PDF</strong>
+              <span>报告输出</span>
+            </div>
+          </div>
+        </section>
+
         <div class="workbench">
           <section class="panel">
             <div class="panel-header">
@@ -30,7 +52,7 @@
                 <div class="form-row">
                   <label for="fileInput">Word 文稿</label>
                   <input id="fileInput" name="file" type="file" accept=".doc,.docx" required />
-                  <div class="notice">当前仅支持 doc / docx，暂不支持 PDF。V1 阶段只允许上传一个文件。</div>
+                  <div class="notice">当前版本一次仅支持上传一个 doc / docx 文件，暂不支持 PDF。</div>
                 </div>
 
                 <div class="form-row">

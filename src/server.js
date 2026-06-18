@@ -54,13 +54,15 @@ const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 50 * 1024 * 1024
 const MAX_MANUSCRIPT_CHARS = Number(process.env.MAX_MANUSCRIPT_CHARS || 120_000);
 const PYTHON_BIN = process.env.PYTHON_BIN || "python3";
 const REPORT_TITLE = "投稿前预审质控报告与修改意见";
-const DOCX_REPORT_SCHEMA_VERSION = "customer-word-detailed-issue-sections-20260526";
-const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-data-analytics-summary-20260604";
+const DOCX_REPORT_SCHEMA_VERSION = "customer-word-v4-optional-checklist-20260616";
+const PDF_REPORT_SCHEMA_VERSION = "customer-pdf-v4-optional-checklist-20260616";
 const FIDELITY_RETENTION_MIN_SOURCE_COUNT = 10;
 const FIDELITY_MIN_ADJUDICATOR_RETENTION_RATE = 0.65;
 const DEFAULT_MODEL_TOKEN_BUDGETS = {
   agent: 16000,
   comparator: 12000,
+  cleaner: 20000,
+  parameter: 16000,
   adjudicator: 24000,
   final: 24000,
   test: 4096,
@@ -76,6 +78,32 @@ const CHROME_EXECUTABLE_CANDIDATES = [
 ].filter(Boolean);
 
 const REVIEW_STAGES = [
+  { key: "topic_innovation_rationale", title: "Agent 1 选题创新及合理性" },
+  { key: "statistical_details", title: "Agent 2 统计学细节" },
+  { key: "fulltext_consistency_numerical_audit", title: "Agent 3 全文一致性与数值审计结果" },
+  { key: "figure_table_quality", title: "Agent 4 图表质量与呈现完整性" },
+  { key: "misc_compliance_expression", title: "Agent 5 杂项与投稿安全表达" }
+];
+
+const PDF_DIMENSIONS = [
+  { key: "topic_innovation_rationale", title: "选题创新及合理性", stage: "topic_innovation_rationale" },
+  { key: "statistical_details", title: "统计学细节", stage: "statistical_details" },
+  { key: "fulltext_consistency_numerical_audit", title: "全文一致性与数值审计", stage: "fulltext_consistency_numerical_audit" },
+  { key: "figure_table_quality", title: "图表质量与呈现完整性", stage: "figure_table_quality" },
+  { key: "misc_compliance_expression", title: "杂项、合规与表达", stage: "misc_compliance_expression" }
+];
+const SCORE_DIMENSIONS = [
+  { key: "topic_value", title: "选题价值" },
+  { key: "study_design", title: "研究设计" },
+  { key: "statistical_analysis", title: "统计分析" },
+  { key: "data_credibility", title: "数据可信" },
+  { key: "figure_presentation", title: "图表呈现" },
+  { key: "writing_expression", title: "写作表达" }
+];
+const PDF_DA_DIMENSION_COLORS = ["#2155c8", "#1d8ad8", "#36a3a1", "#7c3aed", "#e67817"];
+const PDF_DA_SCORE_COLORS = ["#2155c8", "#1d8ad8", "#36a3a1", "#7c3aed", "#e67817", "#0f766e"];
+
+const V21_REVIEW_STAGES = [
   { key: "selection_innovation", title: "选题创新预审" },
   { key: "clinical_methods", title: "临床方法预审" },
   { key: "statistical_results", title: "统计结果预审" },
@@ -83,16 +111,6 @@ const REVIEW_STAGES = [
   { key: "figure_table_visual_audit", title: "图表与视觉材料审计" },
   { key: "submission_safety_expression", title: "投稿安全与表达预审" }
 ];
-
-const PDF_DIMENSIONS = [
-  { key: "selection_innovation", title: "选题创新性", stage: "selection_innovation" },
-  { key: "clinical_methods", title: "研究设计与临床逻辑", stage: "clinical_methods" },
-  { key: "statistical_results", title: "统计分析与证据支撑", stage: "statistical_results" },
-  { key: "numerical_audit", title: "数据一致性", stage: "numerical_audit" },
-  { key: "figure_table_visual_audit", title: "图表质量与呈现完整性", stage: "figure_table_visual_audit" },
-  { key: "submission_safety_expression", title: "投稿合规与成稿完整性", stage: "submission_safety_expression" }
-];
-const PDF_DA_DIMENSION_COLORS = ["#2155c8", "#1d8ad8", "#36a3a1", "#7c3aed", "#e67817", "#c026d3"];
 
 const LEGACY_REVIEW_STAGES = [
   { key: "clinical_rationality", title: "临床合理性预审" },
@@ -104,17 +122,26 @@ const LEGACY_REVIEW_STAGES = [
 
 const GLOBAL_STAGE = { key: "global_system", title: "全局系统提示词" };
 const COMPARATOR_STAGE = { key: "consistency_comparator", title: "通用一致性比较器" };
-const ADJUDICATOR_STAGE = { key: "adjudicator_review", title: "裁决者裁定" };
-const FINAL_STAGE = { key: "final_adjudication", title: "终稿输出" };
-const PROMPT_STAGES = [GLOBAL_STAGE, ...REVIEW_STAGES, COMPARATOR_STAGE, ADJUDICATOR_STAGE, FINAL_STAGE];
+const CLEANER_STAGE = { key: "issue_list_cleaner", title: "清洁员 Agent：问题清单整理" };
+const ADJUDICATOR_STAGE = { key: "adjudicator_parameters", title: "裁决者参数 Agent" };
+const FINAL_STAGE = { key: "final_report_output", title: "终稿 Agent：客户版报告输出" };
+const LEGACY_PROMPT_STAGES = [
+  { key: "global_system", title: "全局系统提示词" },
+  ...V21_REVIEW_STAGES,
+  { key: "consistency_comparator", title: "通用一致性比较器" },
+  { key: "adjudicator_review", title: "裁决者裁定" },
+  { key: "final_adjudication", title: "终稿输出" }
+];
+const PROMPT_STAGES = [...REVIEW_STAGES, CLEANER_STAGE, ADJUDICATOR_STAGE];
 
 const STATUS_TEXT = {
   queued: "排队中",
   parsing: "解析材料中",
-  stage1_running: "GPT 预审组审稿中",
-  stage2_running: "终稿输出生成中",
+  stage1_running: "V3 五 Agent 审稿中",
+  cleaner_running: "清洁员整理问题清单中",
+  stage2_running: "裁决者参数生成中",
   manual_stage_pending: "待人工预审输出",
-  manual_final_pending: "待人工终稿输出",
+  manual_final_pending: "待人工问题清单与结论参数输出",
   docx_generating: "生成质控报告中",
   succeeded: "预审完成",
   failed: "预审失败",
@@ -122,6 +149,14 @@ const STATUS_TEXT = {
 };
 
 const DEFAULT_PROMPTS = {
+  topic_innovation_rationale: `你是 Agent 1：选题创新及合理性审稿人。请站在 SCI 期刊编辑和临床同行审稿人的视角，审查稿件的研究问题、选题发表价值、创新性、临床合理性、证据增量、研究定位、文献基础和结论外推是否适合投稿。不要展开统计细节、全文数字审计、图表质量或投稿合规格式。输出应具体、尖锐、可定位、可修。`,
+  statistical_details: `你是 Agent 2：统计学细节审稿人。请审查统计方法与研究设计/数据结构/结局类型是否匹配，样本量与事件数是否支撑核心分析，模型、变量、混杂控制、亚组、敏感性、诊断/预测分析和结果解释是否足以支撑主要结论。不要审查选题创新、全文数值逐项一致性、图表美学或合规格式。`,
+  fulltext_consistency_numerical_audit: `你是 Agent 3：全文一致性与数值审计审稿人。请逐项核对题目、摘要、Methods、Results、Tables、Figures、legends、Supplement、Discussion 与结论之间的样本量、分母、百分比、P 值、效应值、CI、AUC、单位、时间窗、变量名、分组名、图表编号和结论表述是否一致。不要重新评价统计方法是否合理，也不要评价图像美观度。`,
+  figure_table_quality: `你是 Agent 4：图表质量与呈现完整性审稿人。请审查 Figure/Table 体系是否完整，图表是否支撑 Results 叙事，图注、表题、编号、图片本体可审阅性、图像质量、表格可读性、图表工作量和 SCI 呈现风格是否满足投稿要求。必须结合 artifact_manifest 与可审阅图片状态，不得在没有图片本体时假装评价图片质量。`,
+  misc_compliance_expression: `你是 Agent 5：杂项、投稿安全与表达审稿人。请审查伦理审批、知情同意、注册、数据可用性、利益冲突、版权/量表授权、隐私、AI/网页/模板残留、声明区、语言完成度、缩写术语、参考文献格式与投稿安全风险。不要承担临床方法独立审查，也不要重复统计和数值审计职责。`,
+  issue_list_cleaner: `你是清洁员 Agent。请读取前 5 个 Agent 的审稿报告，只做汇总、去重、清洗、编号、归类和客户可读化，不重新审稿，不新增前述 Agent 均未提出的问题。你必须生成一份可直接阅读的“问题清单.txt”，并同时输出结构化 issue_list JSON，供后端生成 Word/PDF 报告。`,
+  adjudicator_parameters: `你是裁决者参数 Agent。请读取原始 Word 文稿和清洁员生成的问题清单，只输出评分、风险等级、修订工作量、投稿建议、优先问题排序、六维诊断等结论参数。不要输出长篇问题正文，不要压缩或删改问题清单。`,
+  final_report_output: `你是终稿 Agent。请只读取“问题清单.txt”和“结论参数.txt”，生成后端可渲染为客户版 PDF/Word 的报告内容 JSON。你不直接生成 PDF 文件，不重新审稿，不删减问题，不合并问题，只组织客户版摘要、结论、优势短板、检查清单和报告页面内容。`,
   global_system: `你是临床 SCI 稿件投稿前预审质控系统的全局规则底座。你不替代当前调用点提示词，不改变当前调用点要求的输出 JSON 结构；你的作用是为所有执行者 Agent、通用一致性比较器和终审裁决者提供统一的材料边界、风险分级、证据标准和审查纪律。
 
 【一、输入材料使用规则】
@@ -871,8 +906,8 @@ report_content 是可选对象；但只要输入中有 adjudicator_review JSON �
 4. suggested_fix 放 P2/P3 或非阻断但值得优化的问题。
 5. text_and_figure_comments 放正文、图表、Figure/Table、legend、caption、数值呈现和图文一致性相关意见。
 6. compliance_risk 放伦理、注册、隐私、数据可用性、利益冲突、AI 残留、版权和投稿合规风险。
-7. pre_submission_checklist 放投稿前需要逐项核对的动作，必须具体可执行。
-8. final_review_text 是完整客户版报告正文，应包含总体判断、稿件优势、主要短板、优先处理问题、必须修改问题、建议修改问题、正文/图表意见、合规风险和投稿前检查清单的综合叙述。
+7. pre_submission_checklist 放投稿前需要逐项核对的动作，必须具体可执行；若上游裁决者未输出投稿前检查清单，可留空。
+8. final_review_text 是完整客户版报告正文，应包含总体判断、稿件优势、主要短板、优先处理问题、必须修改问题、建议修改问题、正文/图表意见和合规风险；投稿前检查清单仅在上游提供时纳入。
 9. report_content.manuscript_strengths 输出 3-5 条稿件优势，语言应具体，不写泛泛表扬。
 10. report_content.major_weaknesses 输出 3-5 条主要短板，概括 P0/P1 集中风险。
 11. report_content.score_summary 输出模型模糊评分。overall_score、dimension_scores[].score 必须为 0-100 整数；overall_score_rationale 和 dimension_scores[].rationale 必须是客户可读综合判断，不写扣分公式；不得输出“未稳定提供”“仅能依据问题分布判断”“无法评分”等占位说明。
@@ -1315,6 +1350,8 @@ function toAdminTask(task) {
     artifactManifest: task.artifactManifest || null,
     runnerMetadata: task.runnerMetadata || null,
     finalJson: task.finalJson || null,
+    issueListAvailable: Boolean(task.issueListText),
+    conclusionParametersAvailable: Boolean(task.conclusionParametersText || task.adjudicatorParametersText),
     progressLog: task.progressLog || []
   };
 }
@@ -1388,14 +1425,15 @@ function createPromptSnapshot() {
     };
   }
   return {
-    schema_version: "prompt_snapshot.v2",
+    schema_version: "prompt_snapshot.v3",
     createdAt: nowIso(),
     adapterVersion: PROMPT_ADAPTER_VERSION,
     stages,
     reviewStageOrder: REVIEW_STAGES.map((stage) => stage.key),
-    globalStage: GLOBAL_STAGE.key,
+    cleanerStage: CLEANER_STAGE.key,
     adjudicatorStage: ADJUDICATOR_STAGE.key,
-    finalStage: FINAL_STAGE.key,
+    finalStage: null,
+    reportMaterialization: "issue_list_json_plus_conclusion_parameters_json",
     prompts
   };
 }
@@ -1496,21 +1534,19 @@ function buildManualRequestText(title, systemPrompt, userInput) {
 
 function buildManualStageInputText(task, manuscriptText) {
   const promptSnapshot = ensurePromptSnapshot(task);
-  const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
   const parts = [
     "投稿前预审质控系统 - 人工代跑材料",
     "",
     "使用说明：",
-    "1. 以下 6 个预审请求必须分别提交给 GPT。",
-    "2. 不要使用同一个 conversation/thread 连续执行 6 个阶段。",
-    "3. 不要把前一阶段输出传给后一阶段。",
+    "1. 以下 5 个预审请求必须分别提交给 GPT。",
+    "2. 不要使用同一个 conversation/thread 连续执行 5 个 Agent。",
+    "3. 不要把前一阶段输出传给后一阶段；清洁员阶段才汇总 5 个 Agent 输出。",
     "4. 本材料使用任务创建时锁定的提示词快照；后台后续修改提示词不影响本任务。",
     "5. 每个阶段完成后，将输出粘贴回后台“人工代跑工作台”。",
     "",
     `任务 ID：${task.id}`,
     `原始文件名：${task.originalFilename}`,
     `客户信息：${task.customerInfo || "未填写"}`,
-    `全局提示词版本：v${globalPrompt.version} (${globalPrompt.id})`,
     ""
   ];
 
@@ -1522,7 +1558,7 @@ function buildManualStageInputText(task, manuscriptText) {
     parts.push(`prompt_id：${prompt.id}`);
     parts.push(`prompt_version：${prompt.version}`);
     parts.push("");
-    parts.push(buildManualRequestText(stage.title, buildSystemPrompt(globalPrompt.content, prompt.content), buildStageUserInput(task, manuscriptText, task.artifactManifest)));
+    parts.push(buildManualRequestText(stage.title, prompt.content, buildStageUserInput(task, manuscriptText, task.artifactManifest)));
     parts.push("");
   }
 
@@ -1531,27 +1567,33 @@ function buildManualStageInputText(task, manuscriptText) {
 
 function buildManualFinalInputText(task, manuscriptText) {
   if ((task.stageOutputs || []).length < REVIEW_STAGES.length) {
-    throw new Error("请先提交完整六 Agent 人工预审输出");
+    throw new Error("请先提交完整 V4 五 Agent 人工预审输出");
   }
 
   const promptSnapshot = ensurePromptSnapshot(task);
-  const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
-  const finalPrompt = getSnapshotPrompt(promptSnapshot, FINAL_STAGE.key);
+  const cleanerPrompt = getSnapshotPrompt(promptSnapshot, CLEANER_STAGE.key);
+  const adjudicatorPrompt = getSnapshotPrompt(promptSnapshot, ADJUDICATOR_STAGE.key);
   return [
-    "投稿前预审质控系统 - 人工终稿输出材料",
+    "投稿前预审质控系统 - V4 后续输出材料",
     "",
     "使用说明：",
-    "1. 将以下 SYSTEM PROMPT 和 USER PROMPT 作为一次 GPT 请求提交。",
-    "2. GPT 必须只返回 JSON，不要返回 Markdown 代码块。",
-    "3. 本材料使用任务创建时锁定的提示词快照；后台后续修改提示词不影响本任务。",
-    "4. 将 GPT 返回内容完整粘贴回后台“终稿输出 JSON / 输出”。",
+    "1. 请按顺序执行清洁员、裁决者参数两个独立请求。",
+    "2. 清洁员只读取 5 个 Agent TXT，输出纯文本 问题清单.txt。",
+    "3. 裁决者参数 Agent 读取 Word + 问题清单.txt，只输出纯文本 裁决者参数.txt。",
+    "4. 后台将严格根据 问题清单.txt + 裁决者参数.txt 生成 Word/PDF，不再运行终稿 Agent，也不要求 JSON sidecar。",
+    "5. GPT 必须按各自提示词要求返回，不要返回 Markdown 代码块。",
+    "6. 本材料使用任务创建时锁定的提示词快照；后台后续修改提示词不影响本任务。",
     "",
     `任务 ID：${task.id}`,
     `原始文件名：${task.originalFilename}`,
-    `全局提示词版本：v${globalPrompt.version} (${globalPrompt.id})`,
-    `终稿输出提示词版本：v${finalPrompt.version} (${finalPrompt.id})`,
+    `清洁员提示词版本：v${cleanerPrompt.version} (${cleanerPrompt.id})`,
+    `裁决者参数提示词版本：v${adjudicatorPrompt.version} (${adjudicatorPrompt.id})`,
     "",
-    buildManualRequestText(FINAL_STAGE.title, buildSystemPrompt(globalPrompt.content, finalPrompt.content), buildFinalUserInput(task, manuscriptText, task.stageOutputs, task.artifactManifest))
+    buildManualRequestText(CLEANER_STAGE.title, cleanerPrompt.content, buildCleanerUserInput(task, manuscriptText, task.stageOutputs, task.artifactManifest)),
+    "",
+    "=".repeat(88),
+    "",
+    buildManualRequestText(ADJUDICATOR_STAGE.title, adjudicatorPrompt.content, buildAdjudicatorParametersUserInput(task, manuscriptText, "<粘贴清洁员生成的问题清单.txt>", null, task.artifactManifest))
   ].join("\n");
 }
 
@@ -1566,15 +1608,15 @@ function buildManualSkillContextText(task, manuscriptText) {
     "投稿前预审质控系统 - Skill 人工代跑上下文",
     "",
     "使用说明：",
-    "1. 将本文件内容交给 Codex，并明确要求使用 sci-pre-review-runner v2.1 skill 完成预审。",
-    "2. skill 当前输出固定三阶段整包格式：artifact_manifest + 六 Agent 双跑结果 + 一致性比较 + 合并问题清单 + adjudicator_review JSON + final_adjudication JSON。",
-    "3. adjudicator_review JSON 是裁决者裁定结果；final_adjudication JSON 是终稿输出，需基于裁决者裁定生成客户版报告字段。",
+    "1. 将本文件内容交给 Codex，并明确要求使用 sci-pre-review-runner V4 skill 完成预审。",
+    "2. skill 当前输出固定 TXT-only 整包格式：artifact_manifest + agent1.txt 至 agent5.txt + 问题清单.txt + 裁决者参数.txt。",
+    "3. 清洁员负责生成问题清单；裁决者参数 Agent 只输出评分、优先级、投稿建议和页面级报告参数；后台直接渲染 Word/PDF，不再运行终稿 Agent。",
     "4. 后台只接收 skill 最终整包输出，不再需要分阶段粘贴。",
     "5. skill 完成后，将完整输出粘贴回后台“skills 完整输出”文本框。",
     "6. 当前系统仍仅支持 doc / docx，暂不支持 PDF。",
     "7. 若本机 CODEX_HOME 中同名 skill 版本不一致，请以项目内 skills/sci-pre-review-runner/SKILL.md 为准。",
     "8. 本任务使用已锁定的 prompt snapshot；后台后续修改提示词不影响本任务。",
-    "9. final_adjudication 必须输出有效 score_summary；若出现未稳定提供、仅能依据问题分布判断、无法评分、缺失六维评分或全 0 示例分，只在同一终稿会话中修复 score_summary，不重新审稿。",
+    "9. 裁决者参数.txt 必须输出有效综合评分、六维评分、摘要、总体结论、优先问题 ID 和修后投稿定位；若裁决者未输出投稿前检查清单，后台报告将不显示该章节。",
     "",
     "建议命令（如需直接运行上下文构建脚本）：",
     `node "${commandSkillScript}" --manuscript "${commandManuscriptPath}" --customer-info "${commandCustomerInfo}" --project-root "${commandProjectRoot}"${promptArg}`,
@@ -1601,7 +1643,7 @@ function buildManualSkillInstructionText(task) {
   const projectSkillPath = path.join(ROOT, "skills", "sci-pre-review-runner", "SKILL.md");
   const projectSkillScript = path.join(ROOT, "skills", "sci-pre-review-runner", "scripts", "build_review_context.mjs");
   const promptSnapshotText = task.promptSnapshotPath ? `本任务提示词快照路径为：${task.promptSnapshotPath}；运行脚本时请加入 --prompts "${task.promptSnapshotPath}"，不要改用后台后续新版本提示词。` : "如后台已生成本任务提示词快照，请优先使用该快照，不要改用后台后续新版本提示词。";
-  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner v2.1 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 6 个 Agent 双跑、每个 Agent 一致性比较、6 份 Agent 合并问题清单；随后运行 adjudicator_review JSON 进行裁决者裁定，裁决者采用紧凑裁定协议，只输出 final_issue_decisions、priority_issue_ids、source_issue_coverage 等裁定字段，不输出 report_text 或完整客户报告正文；最后运行 final_adjudication JSON（业务含义为终稿输出），终稿只输出客户版报告层字段、模型模糊评分和 priority_issue_ids，完整问题正文由后台物化。final_adjudication 必须输出有效 score_summary；若出现未稳定提供、仅能依据问题分布判断、无法评分、缺失六维评分或全 0 示例分，只在同一终稿会话中修复 score_summary，不重新审稿，不改变最终问题池。请输出可粘贴回后台的完整 v2.1 三阶段结果包，格式需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON。`;
+  return `我在 ${manuscriptPath} 放置了一篇 Word 文稿，原始文件名为：${filename}，客户信息为：${customerInfo}。请使用 sci-pre-review-runner V4 TXT-only 流程进行投稿前预审；若本机同名 skill 版本不一致，请以项目内 ${projectSkillPath} 为准，并可运行 ${projectSkillScript} 构建上下文。${promptSnapshotText} 流程要求：先进行 Python 文件状态检测，再完成 5 个 Agent 单跑并分别保存为 agent1.txt 至 agent5.txt；随后运行 issue_list_cleaner 只基于 5 个 Agent TXT 生成 问题清单.txt；再运行 adjudicator_parameters 读取原 Word + 问题清单.txt 生成 裁决者参数.txt；真正 Word/PDF 由后台严格根据这两个 TXT 文件渲染，不再运行 final_report_output，也不追加 JSON sidecar。请输出可粘贴回后台的完整 V4 结果包，格式包含可选 runner_metadata JSON、可选 artifact_manifest JSON、agent1.txt、agent2.txt、agent3.txt、agent4.txt、agent5.txt、问题清单.txt、裁决者参数.txt。`;
 }
 
 function buildWebReviewRunnerInstructionText(task) {
@@ -1613,7 +1655,7 @@ function buildWebReviewRunnerInstructionText(task) {
   const projectContextScript = path.join(ROOT, "skills", "sci-pre-review-runner", "scripts", "build_review_context.mjs");
   const promptSnapshotText = task.promptSnapshotPath ? `本任务提示词快照路径为：${task.promptSnapshotPath}；构建上下文时请加入 --prompts "${task.promptSnapshotPath}"，不要改用后台后续新版本提示词。` : "如后台已生成本任务提示词快照，请优先使用该快照，不要改用后台后续新版本提示词。";
   return [
-    `请使用 web-review-runner 半自动网页端代跑流程，对这篇 Word 稿件进行投稿前预审。`,
+    `请使用 web-review-runner V4 半自动网页端代跑流程，对这篇 Word 稿件进行投稿前预审。`,
     `Word 文稿路径：${manuscriptPath}`,
     `原始文件名：${filename}`,
     `客户信息：${customerInfo}`,
@@ -1626,14 +1668,14 @@ function buildWebReviewRunnerInstructionText(task) {
     "1. 本地后台只负责解析、任务管理、导入整包和生成 Word/PDF 报告；不要调用后台 API 模型配置。",
     "2. 使用浏览器自动化或 Computer Use 桌面自动化操作我已登录并已选好模型的网页端页面；本指令即为同一 Word 文件、同一目标网页、同一模型的一次性任务级预授权，允许上传原始 Word 并发送医学文稿内容，后续非异常阶段不要反复向我确认。",
     "3. 仅在登录、验证码、账号恢复、付款、浏览器安全拦截、模型/目标网页/文件路径变化、疑似误发、上传状态不可确认、输出截断无法恢复或 JSON 修复失败时暂停询问我。",
-    "4. 每个 Agent 独立对话双跑；每个 Agent 双跑后运行一致性比较并生成合并问题清单。",
-    "5. 裁决者裁定只运行一次；采用紧凑裁定协议，输出 final_issue_decisions、priority_issue_ids 和 source_issue_coverage，不输出 report_text 或完整客户报告正文；若候选项不少于 10 项，final_issue_decisions 至少保留 65%。",
-    "6. 终稿输出只基于裁决者裁定生成客户版报告层 JSON；report_content.final_issue_list 可留空或只给 ID 引用，后台会从裁决者问题池物化完整问题正文，priority_issue_ids 是 5-10 条优先子集。",
-    "7. final_adjudication 必须输出有效 score_summary；若出现未稳定提供、仅能依据问题分布判断、无法评分、缺失六维评分或全 0 示例分，只在同一终稿会话中修复 score_summary，不重新审稿，不改变最终问题池。",
-    "8. 若网页端裁决者输出 report_text、超长 final_issue_list 或截断 JSON，优先在同一阶段发起 compact JSON 格式修复请求，不重新审稿。",
-    "9. 按固定状态机执行：新建独立会话、必要时上传 Word、剪贴板粘贴长 prompt、发送、等待完成、优先点击复制回复、保存 raw、严格 JSON 校验、必要时同会话格式修复、落盘 JSON。",
-    "10. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON、final_adjudication JSON。",
-    "11. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、authorization_mode=task-level-preapproval、fidelity_contract_version=source-coverage.v1、fidelity_validation_mode=strict、每阶段会话/运行编号、上传确认、格式修复、失败重试和暂停事件记录。"
+    "4. 5 个 Agent 各自独立对话单跑，不做双跑，不运行通用一致性比较器。",
+    "5. 5 个 Agent 只输出纯 TXT，分别保存为 agent1.txt 至 agent5.txt，不追加 JSON sidecar。",
+    "6. 清洁员 Agent 默认通过网页端模型执行，只读取 5 个 Agent TXT，生成 问题清单.txt，不上传原 Word，不重新审稿，不新增前述 Agent 均未提出的问题。",
+    "7. 裁决者参数 Agent 读取 Word + 问题清单.txt，只输出 裁决者参数.txt，包含评分、风险等级、修订工作量、投稿建议、优先问题 ID 和修后投稿定位；评分采用六维。投稿前检查清单如裁决者提示词未要求则不强制输出。",
+    "8. 本地后台根据 问题清单.txt + 裁决者参数.txt 直接渲染 PDF/Word，不再运行终稿 Agent。",
+    "9. 按固定状态机执行：新建独立会话、必要时上传 Word、剪贴板粘贴 prompt、发送、等待完成、优先点击复制回复、保存 raw TXT。",
+    "10. 最终输出可粘贴回后台的完整整包，段落顺序为 runner_metadata JSON、artifact_manifest JSON、agent1.txt、agent2.txt、agent3.txt、agent4.txt、agent5.txt、问题清单.txt、裁决者参数.txt。",
+    "11. runner_metadata JSON 需记录 runner=web-browser、target_model、网页地址、authorization_mode=task-level-preapproval、workflow_version=v4-txt-source-only、每阶段会话/运行编号、上传确认、失败重试和暂停事件记录。"
   ].join("\n");
 }
 
@@ -1779,37 +1821,49 @@ function buildStageUserInput(task, manuscriptText, artifactManifest = task.artif
   ].join("\n");
 }
 
-function buildFinalUserInput(task, manuscriptText, stageOutputs, artifactManifest = task.artifactManifest) {
+function formatStageReportsForPrompt(stageOutputs = []) {
   const stageText = stageOutputs
     .map((item, index) => {
       return [
         `【${index + 1}. ${item.title}】`,
         `stage：${item.stage}`,
         `model：${item.model || ""}`,
-        `global_prompt_id：${item.global_prompt_id || ""}`,
         `prompt_id：${item.prompt_id || ""}`,
         `issue_count：${item.issueCount ?? "-"}`,
-        `consistency_overlap：${item.consistency?.p0p1OverlapRate ?? "-"} / ${item.consistency?.overallOverlapRate ?? "-"}`,
         "",
         item.output || ""
       ].join("\n");
     })
     .join("\n\n---\n\n");
+  return stageText;
+}
 
+function buildCleanerUserInput(task, manuscriptText, stageOutputs, artifactManifest = task.artifactManifest) {
   return [
-    "以下为终稿输出材料。请严格返回 final_adjudication JSON。",
+    "以下为 V4 清洁员任务材料。请只汇总 5 个 Agent TXT，严格输出纯文本 问题清单.txt。清洁员不得读取原始 Word、文稿全文或任何原文档派生材料，不得回到论文全文重新审稿。",
     "",
     "【基础任务信息】",
     buildBaseTaskInfo(task),
     "",
-    "【Python 文件状态检测结果 artifact_manifest】",
-    JSON.stringify(artifactManifest || {}, null, 2),
+    "【5 个 Agent 原始审稿报告】",
+    formatStageReportsForPrompt(stageOutputs)
+  ].join("\n");
+}
+
+function buildAdjudicatorParametersUserInput(task, manuscriptText, issueListText, issueListJson, artifactManifest = task.artifactManifest) {
+  return [
+    "以下为 V4 裁决者参数任务材料。请读取 Word 文稿/文稿材料和问题清单，只输出纯文本 裁决者参数.txt。",
+    "",
+    "【基础任务信息】",
+    buildBaseTaskInfo(task),
     "",
     "【文稿材料】",
     truncateChars(manuscriptText, MAX_MANUSCRIPT_CHARS),
     "",
-    "【六阶段 Agent 合并问题清单（过渡期输入；若未提供 adjudicator_review JSON，请基于该清单生成客户版终稿 JSON）】",
-    stageText
+    "【问题清单.txt】",
+    issueListText || "",
+    "",
+    "不要追加 JSON 或程序 sidecar。"
   ].join("\n");
 }
 
@@ -2157,6 +2211,8 @@ function resolveMaxTokensValue(config, options = {}) {
   const key = options.callType || options.stageKey || "default";
   if (key === "agent" || REVIEW_STAGES.some((stage) => stage.key === key)) return DEFAULT_MODEL_TOKEN_BUDGETS.agent;
   if (key === "comparator" || key === COMPARATOR_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.comparator;
+  if (key === "cleaner" || key === CLEANER_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.cleaner;
+  if (key === "parameter" || key === ADJUDICATOR_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.parameter;
   if (key === "adjudicator" || key === ADJUDICATOR_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.adjudicator;
   if (key === "final" || key === FINAL_STAGE.key) return DEFAULT_MODEL_TOKEN_BUDGETS.final;
   if (key === "test") return DEFAULT_MODEL_TOKEN_BUDGETS.test;
@@ -2304,7 +2360,8 @@ function normalizeFinalJson(value) {
     compliance_risk: [],
     pre_submission_checklist: [],
     final_review_text: "",
-    report_content: null
+    report_content: null,
+    pdf_text_set: null
   };
 
   for (const key of Object.keys(result)) {
@@ -2312,6 +2369,14 @@ function normalizeFinalJson(value) {
       result.report_content = value?.report_content && typeof value.report_content === "object" && !Array.isArray(value.report_content)
         ? value.report_content
         : null;
+      continue;
+    }
+    if (key === "pdf_text_set") {
+      result.pdf_text_set = value?.pdf_text_set && typeof value.pdf_text_set === "object" && !Array.isArray(value.pdf_text_set)
+        ? value.pdf_text_set
+        : value?.pdfTextSet && typeof value.pdfTextSet === "object" && !Array.isArray(value.pdfTextSet)
+          ? value.pdfTextSet
+          : null;
       continue;
     }
     if (Array.isArray(result[key])) {
@@ -2339,16 +2404,131 @@ function parseLooseJson(text) {
   }
 }
 
-function parseStageIssues(output, stageKey) {
-  try {
-    const parsed = parseLooseJson(output);
-    const rawIssues = Array.isArray(parsed) ? parsed : parsed?.issues;
-    if (Array.isArray(rawIssues)) {
-      return rawIssues.map((item) => normalizeIssue(item, stageKey)).filter((item) => item.issue);
+function extractMarkedJsonText(text, markerPattern) {
+  const source = String(text || "");
+  const match = markerPattern.exec(source);
+  if (!match) return "";
+  const start = match.index + match[0].length;
+  return source.slice(start).trim();
+}
+
+function parseAgentReportJson(output, stageKey) {
+  const sidecar = extractMarkedJsonText(output, /(?:^|\n)\s*agent_report\s+JSON\s*:\s*/i);
+  const candidates = sidecar ? [sidecar, output] : [output];
+  for (const candidate of candidates) {
+    try {
+      const parsed = parseLooseJson(candidate);
+      const rawIssues = Array.isArray(parsed) ? parsed : parsed?.issues;
+      if (Array.isArray(rawIssues)) {
+        return rawIssues.map((item) => normalizeIssue(item, stageKey)).filter((item) => item.issue);
+      }
+    } catch {
+      // Try next candidate.
     }
-  } catch {
-    // Fall through to a single fallback issue so the run is still visible.
   }
+  return null;
+}
+
+function parseLabeledTxtBlock(block) {
+  const labels = new Map([
+    ["编号", "id"],
+    ["问题编号", "id"],
+    ["清单序号", "id"],
+    ["问题名称", "issue"],
+    ["问题标题", "issue"],
+    ["问题短标题", "issue"],
+    ["风险等级", "severity"],
+    ["级别", "severity"],
+    ["问题级别", "severity"],
+    ["问题类别", "category"],
+    ["归属维度", "primary_dimension"],
+    ["来源模块", "primary_dimension"],
+    ["精准定位", "location"],
+    ["精确定位", "location"],
+    ["定位位置", "location"],
+    ["位置", "location"],
+    ["依据", "evidence"],
+    ["证据", "evidence"],
+    ["问题描述", "explanation"],
+    ["为什么是问题", "explanation"],
+    ["问题及投稿风险", "explanation"],
+    ["投稿风险", "submission_risk"],
+    ["风险说明", "submission_risk"],
+    ["解决方案", "recommendation"],
+    ["低成本处理方向", "recommendation"],
+    ["低成本处理建议", "recommendation"],
+    ["修改建议", "recommendation"],
+    ["处理建议", "recommendation"],
+    ["来源Agent", "source_agents"],
+    ["来源 Agent", "source_agents"],
+    ["来源", "source_agents"]
+  ]);
+  const data = {};
+  let currentKey = "";
+  for (const rawLine of String(block || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || /^=+$/.test(line) || /^-+$/.test(line)) continue;
+    const match = line.match(/^([^:：]{1,24})[:：]\s*(.*)$/);
+    const normalizedLabel = match ? match[1].replace(/\s+/g, "") : "";
+    const mappedKey = match ? labels.get(normalizedLabel) || labels.get(match[1].trim()) : "";
+    if (mappedKey) {
+      currentKey = mappedKey;
+      data[currentKey] = [data[currentKey], match[2].trim()].filter(Boolean).join("\n");
+    } else if (currentKey) {
+      data[currentKey] = [data[currentKey], line].filter(Boolean).join("\n");
+    }
+  }
+  return data;
+}
+
+function parseAgentTxtIssues(output, stageKey) {
+  const textWithoutSidecar = String(output || "")
+    .replace(/(?:^|\n)\s*agent_report\s+JSON\s*:[\s\S]*$/i, "")
+    .trim();
+  if (!textWithoutSidecar) return [];
+  const blockPattern = /(?:^|\n)\s*(?=(?:编号|问题编号)\s*[:：]\s*(?:A[1-5]-|Q\d+|IL-\d+))/gi;
+  const starts = [];
+  let match;
+  while ((match = blockPattern.exec(textWithoutSidecar))) starts.push(match.index);
+  if (!starts.length) return [];
+  const blocks = starts.map((start, index) => textWithoutSidecar.slice(start, starts[index + 1] || textWithoutSidecar.length).trim());
+  return blocks
+    .map((block, index) => {
+      const fields = parseLabeledTxtBlock(block);
+      const id = fields.id || `TXT-${String(index + 1).padStart(2, "0")}`;
+      const severity = fields.severity || id.match(/\bP[0-3]\b/i)?.[0] || "P2";
+      const issue = fields.issue || block.split(/\r?\n/).find((line) => /问题/.test(line)) || id;
+      const explanation = fields.explanation || fields.evidence || "";
+      const submissionRisk = fields.submission_risk || "";
+      const recommendation = fields.recommendation || "";
+      const evidenceParts = [fields.evidence, explanation, submissionRisk].filter(Boolean);
+      return normalizeIssue(
+        {
+          id,
+          severity,
+          category: fields.category || stageKey,
+          primary_dimension: fields.primary_dimension || "",
+          issue,
+          evidence: evidenceParts.join("\n") || block.slice(0, 800),
+          location: fields.location || "未标明",
+          recommendation: recommendation || "建议根据该条审稿意见补充说明并人工复核。",
+          issue_narrative: block,
+          submission_risk: submissionRisk,
+          source_agents: fields.source_agents ? [fields.source_agents] : [stageKey],
+          source_issue_ids: [id],
+          confidence: 0.7
+        },
+        stageKey
+      );
+    })
+    .filter((item) => item.issue);
+}
+
+function parseStageIssues(output, stageKey) {
+  const jsonIssues = parseAgentReportJson(output, stageKey);
+  if (jsonIssues) return jsonIssues;
+  const txtIssues = parseAgentTxtIssues(output, stageKey);
+  if (txtIssues.length) return txtIssues;
   const text = String(output || "").trim();
   return text
     ? [
@@ -2356,16 +2536,967 @@ function parseStageIssues(output, stageKey) {
           {
             severity: "P2",
             category: stageKey,
-            issue: "该阶段未返回结构化 JSON，需人工复核原始输出",
+            issue: "该阶段未返回可解析 sidecar JSON，需人工复核原始输出",
             evidence: text.slice(0, 800),
             location: "阶段输出",
-            recommendation: "检查该阶段提示词，要求严格返回 issues JSON",
+            recommendation: "检查该阶段提示词，要求在 TXT 正文后追加 agent_report JSON sidecar",
             confidence: 0.5
           },
           stageKey
         )
       ]
     : [];
+}
+
+function parseV3CleanerOutput(output) {
+  const sections = extractMarkedSections(String(output || ""), [
+    { key: "issueListText", label: "问题清单.txt", pattern: /^[ \t]*(?:问题清单\.txt|issue_list_txt)[ \t]*:[ \t]*/im },
+    { key: "issueListJson", label: "issue_list JSON", pattern: /^[ \t]*issue_list[ \t]+JSON[ \t]*:[ \t]*/im }
+  ]);
+  const issueListText = sections.issueListText.trim();
+  const issueListJson = enrichIssueListJsonFromText(parseLooseJson(sections.issueListJson), issueListText);
+  return { issueListText, issueListJson };
+}
+
+function parseV3ConclusionParametersOutput(output) {
+  const sections = extractMarkedSections(String(output || ""), [
+    { key: "conclusionParametersText", label: "结论参数.txt", pattern: /^[ \t]*(?:结论参数\.txt|裁决报告\.txt|conclusion_parameters_txt|adjudicator_report_txt)[ \t]*:[ \t]*/im },
+    { key: "conclusionParametersJson", label: "conclusion_parameters JSON", pattern: /^[ \t]*conclusion_parameters[ \t]+JSON[ \t]*:[ \t]*/im }
+  ]);
+  const conclusionParametersText = sections.conclusionParametersText.trim();
+  const conclusionParametersJson = normalizeConclusionParametersJson(parseLooseJson(sections.conclusionParametersJson));
+  return { conclusionParametersText, conclusionParametersJson };
+}
+
+const ISSUE_LIST_TEXT_LABELS = [
+  "清单序号",
+  "清单ID",
+  "问题编号",
+  "编号",
+  "来源 Agent",
+  "来源Agent",
+  "来源模块",
+  "归属模块",
+  "归属维度",
+  "原始编号",
+  "P 分级",
+  "风险等级",
+  "问题级别",
+  "级别",
+  "问题类别",
+  "问题标题",
+  "问题短标题",
+  "问题名称",
+  "精准定位",
+  "精确定位",
+  "定位位置",
+  "位置",
+  "介绍",
+  "问题描述",
+  "问题说明",
+  "为什么是问题",
+  "问题及投稿风险",
+  "投稿风险",
+  "风险说明",
+  "解决方案与位置",
+  "处理建议",
+  "低成本处理建议",
+  "低成本处理方向",
+  "修改建议",
+  "解决方案"
+];
+
+function cleanIssueListFieldValue(value) {
+  return String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/^={5,}$/.test(line))
+    .join("\n")
+    .trim();
+}
+
+function issueListBlockFields(block) {
+  const positions = [];
+  for (const label of ISSUE_LIST_TEXT_LABELS) {
+    const pattern = new RegExp(`(^|\\n)\\s*${escapeRegExp(label)}\\s*[:：]`, "g");
+    let match;
+    while ((match = pattern.exec(block))) {
+      const lineStart = match.index + (match[1] ? match[1].length : 0);
+      positions.push({ label, start: lineStart, valueStart: pattern.lastIndex });
+    }
+  }
+  positions.sort((a, b) => a.start - b.start);
+  const fields = {};
+  for (let index = 0; index < positions.length; index += 1) {
+    const current = positions[index];
+    const next = positions[index + 1];
+    if (fields[current.label]) continue;
+    fields[current.label] = cleanIssueListFieldValue(block.slice(current.valueStart, next ? next.start : block.length));
+  }
+  return fields;
+}
+
+function stageKeyFromIssueListFields(fields) {
+  const source = `${fields["来源 Agent"] || ""} ${fields["来源模块"] || ""} ${fields["原始编号"] || ""}`;
+  if (/Agent\s*1|A1-|创新|选题/i.test(source)) return "topic_innovation_rationale";
+  if (/Agent\s*2|A2-|统计/i.test(source)) return "statistical_details";
+  if (/Agent\s*3|A3-|一致性|数值/i.test(source)) return "fulltext_consistency_numerical_audit";
+  if (/Agent\s*4|A4-|图表/i.test(source)) return "figure_table_quality";
+  if (/Agent\s*5|A5-|杂项|合规|表达/i.test(source)) return "misc_compliance_expression";
+  return "cross_agent";
+}
+
+function parseIssueListTextIssues(issueListText) {
+  const text = String(issueListText || "");
+  const issues = [];
+  const starts = [];
+  let match;
+  const pattern = /(?:^|\n)\s*(清单序号|问题编号|编号)\s*[:：]\s*([A-Z]{0,8}[-_]?\d{1,4}|Q\d{1,4}|IL-\d{1,4})/gi;
+  while ((match = pattern.exec(text))) {
+    starts.push({
+      start: match.index + (match[0].startsWith("\n") ? 1 : 0),
+      id: match[2].trim()
+    });
+  }
+  if (!starts.length) return issues;
+
+  const field = (fields, labels) => {
+    for (const label of labels) {
+      const value = fields[label];
+      if (value && String(value).trim()) return String(value).trim();
+    }
+    return "";
+  };
+
+  for (let index = 0; index < starts.length; index += 1) {
+    const start = starts[index];
+    const next = starts[index + 1];
+    const block = text.slice(start.start, next ? next.start : text.length).trim();
+    const fields = issueListBlockFields(block);
+    const qid = field(fields, ["清单序号", "问题编号", "编号"]) || start.id || `Q${String(index + 1).padStart(3, "0")}`;
+    const category = stageKeyFromIssueListFields(fields);
+    const id = field(fields, ["清单ID", "问题编号", "编号"]) || qid;
+    const severity = normalizeSeverity(field(fields, ["P 分级", "风险等级", "问题级别", "级别"]) || block.match(/\bP[0-3]\b/i)?.[0]);
+    const issue = field(fields, ["问题名称", "问题标题", "问题短标题"]) || `问题 ${qid}`;
+    const location = field(fields, ["精准定位", "精确定位", "定位位置", "位置"]);
+    const explanation = field(fields, ["问题描述", "问题说明", "介绍", "为什么是问题", "问题及投稿风险"]);
+    const submissionRisk = field(fields, ["投稿风险", "风险说明", "问题及投稿风险"]) || explanation;
+    const recommendation = field(fields, ["解决方案与位置", "处理建议", "低成本处理建议", "低成本处理方向", "修改建议", "解决方案"]);
+    const sourceIssueIds = normalizeStringArray([fields["原始编号"], qid].filter(Boolean));
+    const sourceAgents = normalizeStringArray(category);
+    issues.push({
+      q_id: qid,
+      id,
+      severity,
+      category,
+      primary_dimension: field(fields, ["来源模块", "归属模块", "归属维度", "问题类别"]) || "",
+      issue,
+      evidence: explanation,
+      location,
+      recommendation,
+      confidence: 0.85,
+      source_stage: category,
+      issue_narrative: [
+        `问题编号：${qid}`,
+        `问题短标题：${issue}`,
+        `风险等级：${severity}`,
+        location ? `精准定位：${location}` : "",
+        explanation ? `问题及投稿风险：${explanation}` : "",
+        recommendation ? `低成本处理方向：${recommendation}` : ""
+      ].join("\n"),
+      submission_risk: submissionRisk,
+      source_issue_ids: sourceIssueIds,
+      source_agents: sourceAgents
+    });
+  }
+  return issues;
+}
+
+function normalizeIssueListId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const qMatch = text.match(/\bQ[-_]?(\d{1,4})\b/i);
+  if (qMatch) return `Q${String(Number(qMatch[1])).padStart(3, "0")}`;
+  const ilMatch = text.match(/\bIL[-_]?(\d{1,4})\b/i);
+  if (ilMatch) return `IL-${String(Number(ilMatch[1])).padStart(3, "0")}`;
+  return text.toUpperCase();
+}
+
+function validateV4ParsedIssues(issues) {
+  const errors = [];
+  if (!Array.isArray(issues) || !issues.length) {
+    errors.push("问题清单.txt 未解析到任何问题条目");
+    return errors;
+  }
+  for (const issue of issues) {
+    const label = issue.id || issue.q_id || issue.issue || "未编号问题";
+    const missing = [];
+    if (!issue.id && !issue.q_id) missing.push("问题编号");
+    if (!issue.severity) missing.push("P 分级");
+    if (!issue.issue) missing.push("问题名称");
+    if (!issue.location) missing.push("精确定位");
+    if (!issue.evidence) missing.push("介绍/问题描述");
+    if (!issue.submission_risk && !issue.evidence) missing.push("投稿风险");
+    if (!issue.recommendation) missing.push("处理建议");
+    if (missing.length) errors.push(`${label} 缺少：${missing.join("、")}`);
+  }
+  return errors;
+}
+
+function normalizeV4IssueListFromText(issueListText) {
+  const issues = parseIssueListTextIssues(issueListText).map((issue, index) => {
+    const normalized = normalizePdfIssue(
+      {
+        ...issue,
+        id: normalizeIssueListId(issue.id || issue.q_id || `Q${String(index + 1).padStart(3, "0")}`),
+        issue: issue.issue,
+        title: issue.issue,
+        explanation: issue.evidence,
+        risk: issue.submission_risk || issue.evidence,
+        recommendation: issue.recommendation
+      },
+      issue.category || "cross_agent",
+      issue.severity || "P2"
+    );
+    normalized.q_id = issue.q_id || "";
+    normalized.primary_dimension = issue.primary_dimension || normalized.dimensionTitle || "";
+    normalized.submission_risk = issue.submission_risk || issue.evidence || "";
+    normalized.issue_narrative = issue.issue_narrative || [
+      `问题编号：${normalized.id}`,
+      `问题名称：${normalized.issue}`,
+      `P 分级：${normalized.severity}`,
+      `归属模块：${normalized.primary_dimension || normalized.dimensionTitle}`,
+      `精确定位：${normalized.location}`,
+      `介绍：${normalized.evidence}`,
+      `投稿风险：${normalized.submission_risk}`,
+      `处理建议：${normalized.recommendation}`
+    ].join("\n");
+    return normalized;
+  });
+  const validationErrors = validateV4ParsedIssues(issues);
+  if (validationErrors.length) {
+    throw new Error(`V4 问题清单解析失败：${validationErrors.join("；")}`);
+  }
+  return {
+    schema_version: "v4.issue_list_txt_source_only",
+    source: "问题清单.txt",
+    issue_count: issues.length,
+    severity_counts: { ...countSeverities(issues), total: issues.length },
+    issue_distribution: countIssuesByDimension(issues),
+    issues
+  };
+}
+
+const V4_CONCLUSION_FIELD_DEFS = [
+  { key: "english_title", labels: ["完整英文题目", "英文题目", "EN_TITLE"] },
+  { key: "chinese_title", labels: ["完整中文题目", "中文题目", "CN_TITLE"] },
+  { key: "priority_issue_ids", labels: ["优先处理问题 ID", "优先处理问题ID", "优先处理问题的条目序号", "Top 10优先处理问题代码", "Top 问题 Q 编号集合", "TOP_Q_LIST"] },
+  { key: "overall_score", labels: ["综合评分", "总体评分", "总分", "SCORE_TOTAL"] },
+  { key: "overall_score_label", labels: ["评分标签", "当前投稿适宜性判断", "OVERALL_SCORE_LABEL"] },
+  { key: "risk_level", labels: ["风险等级", "风险度评估", "拒稿风险", "RISK_LEVEL"] },
+  { key: "risk_reason", labels: ["风险依据", "风险原因", "判断依据", "RISK_REASON"] },
+  { key: "revision_workload", labels: ["修订工作量", "修订强度", "REVISION_INTENSITY"] },
+  { key: "submission_recommendation", labels: ["投稿建议", "是否建议修后投稿", "RESUBMIT_ADVICE"] },
+  { key: "summary", labels: ["200字摘要", "摘要", "稿件摘要", "ABSTRACT"] },
+  { key: "overall_conclusion", labels: ["总体结论", "总体判断", "审稿结论", "OVERALL_JUDGEMENT", "OVERALL_JUDGMENT"] },
+  { key: "one_line_verdict", labels: ["一句话裁决", "一句话点评", "ONE_LINE_VERDICT"] },
+  { key: "key_barriers", labels: ["核心阻碍", "重点风险", "主要限制因素", "KEY_BARRIERS"] },
+  { key: "publication_positioning", labels: ["预期SCI发表", "预期发表定位", "预期发表层级", "修后投稿定位", "PUBLICATION_POSITIONING"] },
+  { key: "target_score", labels: ["目标分值", "建议目标分值", "TARGET_SCORE"] },
+  { key: "tier_justification", labels: ["层级判断依据", "TIER_JUSTIFICATION"] },
+  { key: "revision_1", labels: ["修订建议 1", "修订建议1", "REVISION_1"] },
+  { key: "revision_2", labels: ["修订建议 2", "修订建议2", "REVISION_2"] },
+  { key: "revision_3", labels: ["修订建议 3", "修订建议3", "REVISION_3"] },
+  { key: "pre_submission_checklist", labels: ["投稿前检查清单", "检查清单", "PRE_SUBMISSION_CHECKLIST"] },
+  { key: "manuscript_strengths", labels: ["主要优势", "稿件优势", "MANUSCRIPT_STRENGTHS"] },
+  { key: "major_weaknesses", labels: ["主要短板", "主要问题", "MAJOR_WEAKNESSES"] },
+  { key: "score_topic", labels: ["选题价值评分", "SCORE_TOPIC"] },
+  { key: "score_design", labels: ["研究设计评分", "SCORE_DESIGN"] },
+  { key: "score_stats", labels: ["统计分析评分", "SCORE_STATS"] },
+  { key: "score_data", labels: ["数据可信评分", "SCORE_DATA"] },
+  { key: "score_figure", labels: ["图表呈现评分", "SCORE_FIGURE"] },
+  { key: "score_writing", labels: ["写作表达评分", "SCORE_WRITING"] },
+  { key: "dimension_scores_text", labels: ["六维评分", "五维评分", "维度评分"] },
+  { key: "dimension_diagnosis", labels: ["五维评价", "六维评价", "五维评价/简短理由", "六维评价/简短理由", "维度评价", "维度诊断"] },
+  { key: "revision_direction", labels: ["修改方向", "优先修订方向", "修订方向"] }
+];
+
+function v4ConclusionLabelPattern(label) {
+  const normalized = escapeRegExp(label).replace(/\s+/g, "\\s+");
+  return new RegExp(`(^|\\n)\\s*(?:\\d+\\s*[.、]\\s*)?(?:\\[\\s*)?${normalized}(?:\\s+[A-Z0-9_]+)?(?:\\s*\\])?\\s*[:：]`, "gi");
+}
+
+function extractV4ConclusionFields(text) {
+  const source = String(text || "");
+  const positions = [];
+  for (const def of V4_CONCLUSION_FIELD_DEFS) {
+    for (const label of def.labels) {
+      const pattern = v4ConclusionLabelPattern(label);
+      let match;
+      while ((match = pattern.exec(source))) {
+        const start = match.index + (match[1] ? match[1].length : 0);
+        positions.push({ key: def.key, label, start, valueStart: pattern.lastIndex });
+      }
+    }
+  }
+  positions.sort((a, b) => a.start - b.start);
+  const fields = {};
+  for (let index = 0; index < positions.length; index += 1) {
+    const current = positions[index];
+    const next = positions[index + 1];
+    if (fields[current.key]) continue;
+    fields[current.key] = source.slice(current.valueStart, next ? next.start : source.length).trim();
+  }
+  return fields;
+}
+
+function parseV4PriorityIssueIds(value) {
+  return Array.from(
+    new Set(
+      String(value || "")
+        .match(/\b(?:IL[-_]?\d{1,4}|Q[-_]?\d{1,4})\b/gi)
+        ?.map(normalizeIssueListId)
+        .filter(Boolean) || []
+    )
+  );
+}
+
+function splitV4TextList(value) {
+  return String(value || "")
+    .split(/\r?\n|[；;]/)
+    .map((item) => item.replace(/^\s*(?:[-*•]|\d+[.、])\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function parseDimensionScoreText(text, dimension) {
+  const aliases = scoreDimensionAliases(dimension).filter((alias) => /[\u4e00-\u9fff]/.test(alias) || alias === dimension.key);
+  for (const alias of aliases) {
+    const pattern = new RegExp(`${escapeRegExp(alias)}\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)(?:\\s*(?:分|/100))?\\s*([^；;\\n]*)`, "i");
+    const match = String(text || "").match(pattern);
+    if (match) {
+      return {
+        key: dimension.key,
+        title: dimension.title,
+        score: parseScoreValue(match[1]),
+        rationale: String(match[2] || "").trim()
+      };
+    }
+  }
+  return null;
+}
+
+function parseScoreFromFreeText(value) {
+  const direct = parseScoreValue(value);
+  if (direct !== null) return direct;
+  const match = String(value || "").match(/(\d+(?:\.\d+)?)(?:\s*(?:分|\/100))?/);
+  return match ? parseScoreValue(match[1]) : null;
+}
+
+function parseV4DimensionScores(fields) {
+  const directMap = {
+    topic_value: fields.score_topic,
+    study_design: fields.score_design,
+    statistical_analysis: fields.score_stats,
+    data_credibility: fields.score_data,
+    figure_presentation: fields.score_figure,
+    writing_expression: fields.score_writing
+  };
+  return SCORE_DIMENSIONS.map((dimension) => {
+    const directText = directMap[dimension.key] || "";
+    const directScore = parseScoreFromFreeText(directText);
+    const fromLine = parseDimensionScoreText(fields.dimension_scores_text || "", dimension);
+    return {
+      key: dimension.key,
+      title: dimension.title,
+      score: directScore !== null ? directScore : fromLine?.score ?? null,
+      rationale: directScore !== null
+        ? String(directText || "").replace(/^\s*\d+(?:\.\d+)?\s*(?:分|\/100)?\s*/, "").trim()
+        : fromLine?.rationale || ""
+    };
+  });
+}
+
+function normalizeV4AdjudicatorParametersFromText(text, issueListJson) {
+  const fields = extractV4ConclusionFields(text);
+  const dimensionScores = parseV4DimensionScores(fields);
+  const priorityIssueIds = parseV4PriorityIssueIds(fields.priority_issue_ids);
+  const issueIds = new Set((issueListJson?.issues || []).flatMap((issue) => [
+    normalizeIssueListId(issue.id),
+    normalizeIssueListId(issue.q_id)
+  ].filter(Boolean)));
+  const unknownPriorityIds = priorityIssueIds.filter((id) => !issueIds.has(id));
+  const summary = customerFacingText(fields.summary || "");
+  const conclusion = customerFacingText(fields.overall_conclusion || "");
+  const checklist = splitV4TextList(fields.pre_submission_checklist);
+  const revisionItems = [fields.revision_1, fields.revision_2, fields.revision_3, fields.revision_direction]
+    .map((item) => customerFacingText(item || ""))
+    .filter(Boolean);
+  const errors = [];
+  if (parseScoreFromFreeText(fields.overall_score) === null) errors.push("裁决者参数.txt 缺少综合评分");
+  if (dimensionScores.some((item) => item.score === null)) errors.push(`裁决者参数.txt 缺少六维评分：${dimensionScores.filter((item) => item.score === null).map((item) => item.title).join("、")}`);
+  if (!fields.risk_level) errors.push("裁决者参数.txt 缺少风险等级/风险度评估");
+  if (!summary) errors.push("裁决者参数.txt 缺少摘要");
+  if (summary && Array.from(summary).length < 100) errors.push(`裁决者参数.txt 摘要过短，至少 100 字，当前 ${Array.from(summary).length} 字`);
+  if (!conclusion) errors.push("裁决者参数.txt 缺少总体结论/总体判断");
+  if (!priorityIssueIds.length) errors.push("裁决者参数.txt 缺少优先处理问题 ID");
+  if (unknownPriorityIds.length) errors.push(`裁决者参数.txt 的优先问题编号未在问题清单中找到：${unknownPriorityIds.join("、")}`);
+  if (!fields.submission_recommendation && !revisionItems.length) errors.push("裁决者参数.txt 缺少投稿建议或修改方向");
+  if (!fields.publication_positioning) errors.push("裁决者参数.txt 缺少预期SCI发表/修后投稿定位");
+  if (errors.length) throw new Error(`V4 裁决者参数解析失败：${errors.join("；")}`);
+
+  return {
+    schema_version: "v4.adjudicator_parameters_txt_source_only",
+    source: "裁决者参数.txt",
+    english_title: customerFacingText(fields.english_title || ""),
+    chinese_title: customerFacingText(fields.chinese_title || ""),
+    summary,
+    overall_conclusion: conclusion,
+    overall_score: parseScoreFromFreeText(fields.overall_score),
+    overall_score_label: customerFacingText(fields.overall_score_label || scoreBandLabelFromScore(parseScoreFromFreeText(fields.overall_score))),
+    overall_score_rationale: customerFacingText(fields.risk_reason || fields.tier_justification || ""),
+    dimension_scores: dimensionScores,
+    submission_recommendation: customerFacingText(fields.submission_recommendation || revisionItems.join("；")),
+    risk_level: customerFacingText(fields.risk_level || ""),
+    revision_workload: customerFacingText(fields.revision_workload || ""),
+    priority_issue_ids: priorityIssueIds,
+    manuscript_strengths: splitV4TextList(fields.manuscript_strengths),
+    major_weaknesses: splitV4TextList(fields.major_weaknesses || fields.key_barriers),
+    dimension_diagnosis: {},
+    pre_submission_checklist: checklist,
+    pdf_text_set: {},
+    min_revision_advice: revisionItems.join("；"),
+    one_line_verdict: customerFacingText(fields.one_line_verdict || ""),
+    risk_reason: customerFacingText(fields.risk_reason || ""),
+    key_barriers: customerFacingText(fields.key_barriers || ""),
+    publication_positioning: customerFacingText(fields.publication_positioning || ""),
+    target_score: customerFacingText(fields.target_score || ""),
+    tier_justification: customerFacingText(fields.tier_justification || ""),
+    revision_directions: revisionItems
+  };
+}
+
+function issueListTextLookup(issueListText) {
+  const lookup = new Map();
+  for (const issue of parseIssueListTextIssues(issueListText)) {
+    const keys = [
+      issue.id,
+      issue.q_id,
+      ...normalizeStringArray(issue.source_issue_ids)
+    ];
+    for (const key of keys) {
+      const normalized = String(key || "").trim();
+      if (normalized && !lookup.has(normalized)) lookup.set(normalized, issue);
+    }
+  }
+  return lookup;
+}
+
+function placeholderIssueText(value) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  return /^需人工核对$/.test(text)
+    || /见\s*问题清单\s*Q\d+/i.test(text)
+    || /完整问题块|所述投稿风险|精准定位.*字段|解决方案.*字段/i.test(text);
+}
+
+function mergeIssueListTextDetails(jsonIssue, textIssue) {
+  if (!textIssue) return jsonIssue;
+  const result = { ...jsonIssue };
+  const useText = (key) => {
+    if (textIssue[key] && (placeholderIssueText(result[key]) || String(textIssue[key]).length > String(result[key] || "").length)) {
+      result[key] = textIssue[key];
+    }
+  };
+  for (const key of ["issue", "location", "evidence", "recommendation", "issue_narrative", "submission_risk"]) useText(key);
+  if (!result.primary_dimension && textIssue.primary_dimension) result.primary_dimension = textIssue.primary_dimension;
+  if (!result.category || result.category === "cross_agent") result.category = textIssue.category || result.category;
+  result.source_issue_ids = Array.from(new Set([...normalizeStringArray(result.source_issue_ids), ...normalizeStringArray(textIssue.source_issue_ids)]));
+  result.source_agents = Array.from(new Set([...normalizeStringArray(result.source_agents), ...normalizeStringArray(textIssue.source_agents)]));
+  result.confidence = Math.max(normalizeConfidence(result.confidence), normalizeConfidence(textIssue.confidence));
+  return result;
+}
+
+function enrichIssueListJsonFromText(issueListJson, issueListText) {
+  const normalized = normalizeIssueListJson(issueListJson);
+  const lookup = issueListTextLookup(issueListText);
+  if (!lookup.size) return normalized;
+  const issues = normalized.issues.map((issue) => {
+    const locationRefs = String(issue.location || "").match(/Q\d+/g) || [];
+    const recommendationRefs = String(issue.recommendation || "").match(/Q\d+/g) || [];
+    const narrativeRefs = String(issue.issue_narrative || "").match(/Q\d+/g) || [];
+    const referenceIds = [
+      issue.id,
+      ...normalizeStringArray(issue.source_issue_ids),
+      ...locationRefs,
+      ...recommendationRefs,
+      ...narrativeRefs
+    ];
+    const textIssue = referenceIds.map((id) => lookup.get(id)).find(Boolean);
+    return mergeIssueListTextDetails(issue, textIssue);
+  });
+  return normalizeIssueListJson({ ...normalized, issues });
+}
+
+function normalizeIssueListJson(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const issues = Array.isArray(source.issues)
+    ? source.issues.map((item) => normalizeIssue(item, item?.category || "cross_agent")).filter((item) => item.issue)
+    : [];
+  const normalizedIssues = issues.map((issue, index) => ({
+    id: issue.id || `IL-${String(index + 1).padStart(3, "0")}`,
+    ...issue
+  }));
+  return {
+    schema_version: source.schema_version || "v3.issue_list.v1",
+    issue_count: normalizedIssues.length,
+    severity_counts: { ...countSeverities(normalizedIssues), total: normalizedIssues.length },
+    issue_distribution: countIssuesByDimension(normalizedIssues.map((issue) => normalizePdfIssue(issue, issue.category, issue.severity))),
+    issues: normalizedIssues
+  };
+}
+
+function normalizeConclusionParametersJson(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const dimensionScores = Array.isArray(source.dimension_scores)
+    ? source.dimension_scores
+    : Array.isArray(source.dimensionScores)
+      ? source.dimensionScores
+      : [];
+  const pdfTextSet = source.pdf_text_set && typeof source.pdf_text_set === "object" && !Array.isArray(source.pdf_text_set)
+    ? source.pdf_text_set
+    : source.pdfTextSet && typeof source.pdfTextSet === "object" && !Array.isArray(source.pdfTextSet)
+      ? source.pdfTextSet
+      : {};
+  const artifactCompletionSummary = source.artifact_completion_summary && typeof source.artifact_completion_summary === "object" && !Array.isArray(source.artifact_completion_summary)
+    ? source.artifact_completion_summary
+    : source.artifactCompletionSummary && typeof source.artifactCompletionSummary === "object" && !Array.isArray(source.artifactCompletionSummary)
+      ? source.artifactCompletionSummary
+      : null;
+  return {
+    schema_version: source.schema_version || "v3.conclusion_parameters.v1",
+    summary: String(source.summary || source.short_summary || source.shortSummary || "").trim(),
+    overall_conclusion: String(source.overall_conclusion || source.overallConclusion || source.conclusion || "").trim(),
+    overall_score: finiteNumber(source.overall_score ?? source.overallScore, null),
+    overall_score_label: String(source.overall_score_label || source.overallScoreLabel || "").trim(),
+    overall_score_rationale: String(source.overall_score_rationale || source.overallScoreRationale || source.rationale || "").trim(),
+    dimension_scores: dimensionScores,
+    submission_recommendation: String(source.submission_recommendation || source.submissionRecommendation || "").trim(),
+    risk_level: String(source.risk_level || source.riskLevel || "").trim(),
+    revision_workload: String(source.revision_workload || source.revisionWorkload || "").trim(),
+    priority_issue_ids: normalizeStringArray(source.priority_issue_ids || source.priorityIssueIds || source.priority_ids || source.priorityIds),
+    manuscript_strengths: Array.isArray(source.manuscript_strengths) ? source.manuscript_strengths : [],
+    major_weaknesses: Array.isArray(source.major_weaknesses) ? source.major_weaknesses : [],
+    dimension_diagnosis: source.dimension_diagnosis && typeof source.dimension_diagnosis === "object" && !Array.isArray(source.dimension_diagnosis) ? source.dimension_diagnosis : {},
+    pre_submission_checklist: Array.isArray(source.pre_submission_checklist) ? source.pre_submission_checklist : [],
+    pdf_text_set: pdfTextSet,
+    artifact_completion_summary: artifactCompletionSummary,
+    min_revision_advice: String(source.min_revision_advice || source.minimum_revision_path || source.minimumRevisionPath || "").trim(),
+    english_title: String(source.english_title || source.englishTitle || source.en_title || source.EN_TITLE || "").trim(),
+    chinese_title: String(source.chinese_title || source.chineseTitle || source.cn_title || source.CN_TITLE || "").trim(),
+    one_line_verdict: String(source.one_line_verdict || source.oneLineVerdict || source.ONE_LINE_VERDICT || source.overall_comment || "").trim(),
+    risk_reason: String(source.risk_reason || source.riskReason || source.RISK_REASON || "").trim(),
+    key_barriers: String(source.key_barriers || source.keyBarriers || source.KEY_BARRIERS || "").trim(),
+    publication_positioning: String(source.publication_positioning || source.publicationPositioning || source.PUBLICATION_POSITIONING || "").trim(),
+    target_score: String(source.target_score || source.targetScore || source.TARGET_SCORE || "").trim(),
+    tier_justification: String(source.tier_justification || source.tierJustification || source.TIER_JUSTIFICATION || "").trim()
+  };
+}
+
+function parseConclusionParametersTextFields(text) {
+  const source = String(text || "");
+  const readLine = (...labels) => {
+    for (const label of labels) {
+      const pattern = new RegExp(`(?:^|\\n)\\s*${escapeRegExp(label)}\\s*[:：]\\s*([^\\n]+)`, "i");
+      const match = source.match(pattern);
+      if (match?.[1]?.trim()) return match[1].trim();
+    }
+    return "";
+  };
+  const readPriorityIds = () => {
+    const textValue = readLine("优先处理问题 ID", "Top 10优先处理问题代码", "Top 问题 Q 编号集合 TOP_Q_LIST", "TOP_Q_LIST");
+    return textValue
+      .split(/[,\s，、；;]+/)
+      .map((item) => item.trim())
+      .filter((item) => /^(?:IL|Q)-?\d+$/i.test(item) || /^IL-\d+$/i.test(item) || /^Q\d+$/i.test(item));
+  };
+  const dimensionScores = [];
+  const scoreLine = readLine("六维评分", "五维评分", "维度评分");
+  if (scoreLine) {
+    for (const dimension of SCORE_DIMENSIONS) {
+      const aliases = scoreDimensionAliases(dimension);
+      const foundAlias = aliases.find((alias) => new RegExp(`${escapeRegExp(alias)}\\s*[:：]?\\s*\\d`, "i").test(scoreLine));
+      if (!foundAlias) continue;
+      const match = scoreLine.match(new RegExp(`${escapeRegExp(foundAlias)}\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)`, "i"));
+      if (match) dimensionScores.push({ key: dimension.key, title: dimension.title, score: Number(match[1]), rationale: "" });
+    }
+  }
+  return {
+    english_title: readLine("英文题目", "EN_TITLE", "英文题目 EN_TITLE"),
+    chinese_title: readLine("中文题目", "CN_TITLE", "中文题目 CN_TITLE"),
+    overall_score: parseScoreValue(readLine("综合评分", "总分", "SCORE_TOTAL")),
+    overall_score_label: readLine("评分标签", "当前投稿适宜性判断"),
+    risk_level: readLine("风险等级", "拒稿风险", "RISK_LEVEL"),
+    risk_reason: readLine("风险依据", "判断依据", "RISK_REASON"),
+    revision_workload: readLine("修订工作量", "修订强度", "REVISION_INTENSITY"),
+    submission_recommendation: readLine("投稿建议", "是否建议修后投稿 RESUBMIT_ADVICE", "RESUBMIT_ADVICE"),
+    summary: readLine("摘要", "稿件摘要", "ABSTRACT"),
+    overall_conclusion: readLine("总体结论", "审稿结论", "OVERALL_JUDGEMENT"),
+    one_line_verdict: readLine("一句话裁决", "一句话点评", "ONE_LINE_VERDICT"),
+    key_barriers: readLine("核心阻碍", "主要限制因素", "KEY_BARRIERS"),
+    publication_positioning: readLine("预期发表定位", "预期发表层级", "PUBLICATION_POSITIONING"),
+    target_score: readLine("目标分值", "建议目标分值", "TARGET_SCORE"),
+    tier_justification: readLine("层级判断依据", "判断依据", "TIER_JUSTIFICATION"),
+    priority_issue_ids: readPriorityIds(),
+    dimension_scores: dimensionScores
+  };
+}
+
+function parseTitleFieldsFromSummaryText(text) {
+  const source = String(text || "");
+  const readLine = (...labels) => {
+    for (const label of labels) {
+      const pattern = new RegExp(`(?:^|\\n)\\s*${escapeRegExp(label)}\\s*[:：]\\s*([^\\n]+)`, "i");
+      const match = source.match(pattern);
+      if (match?.[1]?.trim()) return match[1].trim();
+    }
+    return "";
+  };
+  return {
+    english_title: readLine("完整英文题目", "英文题目", "English title", "EN_TITLE"),
+    chinese_title: readLine("完整中文题目", "中文题目", "Chinese title", "CN_TITLE")
+  };
+}
+
+function cleanInferredTitle(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/^(?:title|题目|标题|论文题目)\s*[:：]\s*/i, "")
+    .trim()
+    .replace(/^[:：]+|[:：]+$/g, "")
+    .trim();
+}
+
+function isUsefulInferredTitle(text) {
+  const value = cleanInferredTitle(text);
+  if (!value || value.length < 12 || value.length > 300) return false;
+  if (/^(?:title|running\s*title|abstract|keywords?|authors?|affiliations?|introduction|题目|标题|摘要|关键词)\s*[:：]?$/i.test(value)) return false;
+  return /[A-Za-z\u4e00-\u9fff]/.test(value);
+}
+
+function inferTitleFieldsFromManuscriptText(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 80);
+  let englishTitle = "";
+  let chineseTitle = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const inline = line.match(/^(?:title|英文题目|完整英文题目)\s*[:：]\s*(.+)$/i);
+    if (!englishTitle && inline && isUsefulInferredTitle(inline[1])) {
+      englishTitle = cleanInferredTitle(inline[1]);
+      continue;
+    }
+    if (!englishTitle && /^(?:title|英文题目|完整英文题目)\s*[:：]?$/i.test(line)) {
+      const candidate = lines.slice(index + 1, index + 6).find(isUsefulInferredTitle);
+      if (candidate) englishTitle = cleanInferredTitle(candidate);
+      continue;
+    }
+    const cnInline = line.match(/^(?:中文题目|完整中文题目)\s*[:：]\s*(.+)$/i);
+    if (!chineseTitle && cnInline && isUsefulInferredTitle(cnInline[1])) {
+      chineseTitle = cleanInferredTitle(cnInline[1]);
+    }
+  }
+  if (!englishTitle) {
+    for (const line of lines) {
+      if (/^(?:abstract|keywords?|1\.?\s*introduction|introduction|摘要|关键词)\b/i.test(line)) break;
+      if (isUsefulInferredTitle(line)) {
+        englishTitle = cleanInferredTitle(line);
+        break;
+      }
+    }
+  }
+  return { english_title: englishTitle, chinese_title: chineseTitle };
+}
+
+function titleFieldsFromArtifactManifest(manifest) {
+  const source = manifest && typeof manifest === "object" && !Array.isArray(manifest) ? manifest : {};
+  const core = source.core_properties && typeof source.core_properties === "object" && !Array.isArray(source.core_properties)
+    ? source.core_properties
+    : {};
+  const englishTitle = [
+    source.english_title,
+    source.englishTitle,
+    source.manuscript_title,
+    source.manuscriptTitle,
+    source.article_title,
+    source.articleTitle,
+    source.title,
+    core.title
+  ].map(cleanInferredTitle).find(isUsefulInferredTitle) || "";
+  const chineseTitle = [
+    source.chinese_title,
+    source.chineseTitle,
+    source.cn_title,
+    source.CN_TITLE
+  ].map(cleanInferredTitle).find(isUsefulInferredTitle) || "";
+  return { english_title: englishTitle, chinese_title: chineseTitle };
+}
+
+function titleFieldsFromTask(task) {
+  const artifactFields = titleFieldsFromArtifactManifest(task?.artifactManifest);
+  if (artifactFields.english_title && artifactFields.chinese_title) return artifactFields;
+  let textFields = { english_title: "", chinese_title: "" };
+  const parsedPath = task?.parsedTextPath;
+  if (parsedPath) {
+    try {
+      if (fs.existsSync(parsedPath)) {
+        textFields = inferTitleFieldsFromManuscriptText(fs.readFileSync(parsedPath, "utf8"));
+      }
+    } catch {
+      textFields = { english_title: "", chinese_title: "" };
+    }
+  }
+  return mergeConclusionTextFields(artifactFields, textFields);
+}
+
+function mergeConclusionTextFields(jsonFields, textFields) {
+  const result = { ...(jsonFields || {}) };
+  for (const [key, value] of Object.entries(textFields || {})) {
+    if (Array.isArray(value)) {
+      if ((!Array.isArray(result[key]) || !result[key].length) && value.length) result[key] = value;
+      continue;
+    }
+    if ((result[key] === null || result[key] === undefined || String(result[key]).trim() === "") && value !== null && value !== undefined && String(value).trim() !== "") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function scoreDimensionAliases(dimension) {
+  const aliases = {
+    topic_value: ["topic_value", "topicValue", "topic_innovation_rationale", "selection_innovation", "选题价值", "选题创新及合理性", "选题创新", "创新性"],
+    study_design: ["study_design", "studyDesign", "clinical_methods", "研究设计", "临床设计", "临床方法", "研究设计与临床逻辑"],
+    statistical_analysis: ["statistical_analysis", "statisticalAnalysis", "statistical_details", "statistical_results", "统计分析", "统计学细节", "统计结果"],
+    data_credibility: ["data_credibility", "dataCredibility", "fulltext_consistency_numerical_audit", "numerical_audit", "数据可信", "数据可信度", "全文一致性与数值审计", "数值审计"],
+    figure_presentation: ["figure_presentation", "figurePresentation", "figure_table_quality", "figure_table_visual_audit", "图表呈现", "图表质量与呈现完整性", "图表质量"],
+    writing_expression: ["writing_expression", "writingExpression", "misc_compliance_expression", "submission_safety_expression", "写作表达", "杂项、合规与表达", "投稿安全与表达", "合规与表达"]
+  };
+  return aliases[dimension.key] || [dimension.key, dimension.title];
+}
+
+function parseScoreValue(value, options = {}) {
+  const text = String(value ?? "").trim();
+  const hundredPointMatch = text.match(/(\d+(?:\.\d+)?)\s*\/\s*100\b/i);
+  if (hundredPointMatch) return Math.round(clampNumber(Number(hundredPointMatch[1]), 0, 100));
+  const tenPointMatch = text.match(/(\d+(?:\.\d+)?)\s*\/\s*10\b/i);
+  if (tenPointMatch) return Math.round(clampNumber(Number(tenPointMatch[1]) * 10, 0, 100));
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(clampNumber(options.scale10 ? number * 10 : number, 0, 100));
+}
+
+function findScoreDimensionEntry(rawScores, dimension) {
+  const aliases = scoreDimensionAliases(dimension).map((item) => String(item).toLowerCase().replace(/\s+/g, ""));
+  return rawScores.find((item) => {
+    if (!item || typeof item !== "object") return false;
+    const candidates = [item.key, item.stage, item.category, item.title, item.dimension, item.primary_dimension]
+      .map((value) => String(value || "").toLowerCase().replace(/\s+/g, ""))
+      .filter(Boolean);
+    return candidates.some((candidate) => aliases.includes(candidate));
+  }) || {};
+}
+
+function scoreSummaryFromConclusionParameters(conclusionParametersJson = {}) {
+  const rawScores = Array.isArray(conclusionParametersJson.dimension_scores) ? conclusionParametersJson.dimension_scores : [];
+  const dimension_scores = SCORE_DIMENSIONS.map((dimension) => {
+    const found = findScoreDimensionEntry(rawScores, dimension);
+    return {
+      key: dimension.key,
+      title: dimension.title,
+      score: parseScoreValue(found.score ?? found.value ?? found.score_text ?? found.scoreText),
+      rationale: String(found.rationale || found.reason || "").trim()
+    };
+  });
+  return {
+    overall_score: finiteNumber(conclusionParametersJson.overall_score, null),
+    overall_score_label: conclusionParametersJson.overall_score_label || "",
+    overall_score_rationale: conclusionParametersJson.overall_score_rationale || "",
+    dimension_scores
+  };
+}
+
+function normalizePdfTextSet(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const read = (...keys) => {
+    for (const key of keys) {
+      const text = customerFacingText(source[key] || "");
+      if (text) return text;
+    }
+    return "";
+  };
+  return {
+    cover_subtitle: read("cover_subtitle", "coverSubtitle"),
+    overview_lead: read("overview_lead", "overviewLead"),
+    score_interpretation: read("score_interpretation", "scoreInterpretation"),
+    strengths_intro: read("strengths_intro", "strengthsIntro"),
+    weaknesses_intro: read("weaknesses_intro", "weaknessesIntro"),
+    priority_issues_intro: read("priority_issues_intro", "priorityIssuesIntro"),
+    full_issue_list_intro: read("full_issue_list_intro", "fullIssueListIntro"),
+    checklist_intro: read("checklist_intro", "checklistIntro"),
+    closing_note: read("closing_note", "closingNote")
+  };
+}
+
+function hasUsableScoreSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const overall = finiteNumber(value.overall_score ?? value.overallScore, null);
+  const dimensions = Array.isArray(value.dimension_scores)
+    ? value.dimension_scores
+    : Array.isArray(value.dimensionScores)
+      ? value.dimensionScores
+      : [];
+  if (overall === null) return false;
+  const validDimensionCount = SCORE_DIMENSIONS.filter((dimension) => {
+    const found = findScoreDimensionEntry(dimensions, dimension);
+    return finiteNumber(found?.score ?? found?.value ?? found?.score_10 ?? found?.score10, null) !== null
+      || /\d/.test(String(found?.score_text || found?.scoreText || ""));
+  }).length;
+  return validDimensionCount === SCORE_DIMENSIONS.length;
+}
+
+function materializeV3FinalJson(finalJson, issueListJson, conclusionParametersJson, issueListText = "", conclusionParametersText = "", artifactManifest = null) {
+  const normalizedFinal = normalizeFinalJson(finalJson);
+  return materializeV3ReportJsonFromFiles(issueListJson, conclusionParametersJson, issueListText, conclusionParametersText, normalizedFinal, artifactManifest);
+}
+
+function buildTwoFileSummary(conclusionParametersJson, finalIssueList) {
+  const explicit = customerFacingText(conclusionParametersJson.summary || "");
+  if (explicit) return Array.from(explicit.replace(/\s+/g, " ")).slice(0, 200).join("");
+  const counts = countSeverities(finalIssueList);
+  const score = finiteNumber(conclusionParametersJson.overall_score, null);
+  const scoreText = score === null ? "" : `综合评分${score}/100，`;
+  const label = conclusionParametersJson.overall_score_label || conclusionParametersJson.risk_level || "综合评估";
+  const recommendation = conclusionParametersJson.submission_recommendation || "建议按问题清单完成投稿前修订";
+  const text = `本次预审共识别${finalIssueList.length}项问题，P0 ${counts.P0}项、P1 ${counts.P1}项、P2 ${counts.P2}项、P3 ${counts.P3}项。${scoreText}当前判断为${label}。${recommendation}`;
+  return Array.from(customerFacingText(text).replace(/\s+/g, " ")).slice(0, 200).join("");
+}
+
+function buildTwoFileOverallConclusion(conclusionParametersJson, finalIssueList) {
+  const explicit = customerFacingText(conclusionParametersJson.overall_conclusion || "");
+  if (explicit) return explicit;
+  const parts = [];
+  if (conclusionParametersJson.submission_recommendation) parts.push(conclusionParametersJson.submission_recommendation);
+  if (conclusionParametersJson.risk_level) parts.push(`风险等级为${conclusionParametersJson.risk_level}`);
+  if (conclusionParametersJson.revision_workload) parts.push(`修订工作量为${conclusionParametersJson.revision_workload}`);
+  if (conclusionParametersJson.overall_score_rationale) parts.push(conclusionParametersJson.overall_score_rationale);
+  if (!parts.length) {
+    const counts = countSeverities(finalIssueList);
+    parts.push(`当前稿件共锁定${finalIssueList.length}项问题，其中 P0 ${counts.P0}项、P1 ${counts.P1}项、P2 ${counts.P2}项、P3 ${counts.P3}项。建议按优先级完成修订后再进入投稿流程。`);
+  }
+  return customerFacingText(parts.join("。").replace(/。。+/g, "。"));
+}
+
+function buildStrictPdfSourceConclusion(task) {
+  const base = normalizeConclusionParametersJson(task?.conclusionParametersJson || {});
+  const titleFields = parseTitleFieldsFromSummaryText(task?.issueListText || "");
+  const textFields = parseConclusionParametersTextFields(task?.conclusionParametersText || "");
+  const taskTitleFields = titleFieldsFromTask(task);
+  return mergeConclusionTextFields(mergeConclusionTextFields(mergeConclusionTextFields(base, titleFields), textFields), taskTitleFields);
+}
+
+function buildFallbackPdfTextSet(conclusionParametersJson) {
+  const recommendation = customerFacingText(conclusionParametersJson.submission_recommendation || "");
+  const rationale = customerFacingText(conclusionParametersJson.overall_score_rationale || "");
+  return {
+    cover_subtitle: "面向临床 SCI 投稿前的结构化质控、风险定位与修改优先级建议",
+    overview_lead: recommendation || "本报告基于问题清单和结论参数，对当前投稿成熟度、主要风险和修订优先级进行客户版汇总。",
+    score_interpretation: rationale || "评分来自裁决者参数 Agent 的综合判断，用于辅助识别主要短板和修订投入方向。",
+    strengths_intro: "以下优势来自裁决者参数汇总，用于判断稿件可保留和强化的基础。",
+    weaknesses_intro: "以下短板集中体现当前版本影响投稿准备度的主要风险。",
+    priority_issues_intro: "以下问题按投稿前处理优先级排列，建议先完成这些修订，再处理其余优化项。",
+    full_issue_list_intro: "本页保留最终问题清单的客户版完整清单，用于后续逐项修改和复核。",
+    checklist_intro: "完成修改后，建议按以下清单进行投稿前终检。",
+    closing_note: "建议完成重点问题修订后，再进行一次全文一致性和投稿材料完整性复核。"
+  };
+}
+
+function materializeV3ReportJsonFromFiles(issueListJson, conclusionParametersJson, issueListText = "", conclusionParametersText = "", finalJson = null, artifactManifest = null) {
+  const normalizedFinal = normalizeFinalJson(finalJson || {});
+  const normalizedIssueList = enrichIssueListJsonFromText(issueListJson, issueListText);
+  const summaryTitleFields = parseTitleFieldsFromSummaryText(issueListText);
+  const artifactTitleFields = titleFieldsFromArtifactManifest(artifactManifest);
+  const normalizedConclusion = mergeConclusionTextFields(
+    mergeConclusionTextFields(
+      mergeConclusionTextFields(normalizeConclusionParametersJson(conclusionParametersJson), summaryTitleFields),
+      parseConclusionParametersTextFields(conclusionParametersText)
+    ),
+    artifactTitleFields
+  );
+  const reportContent = normalizedFinal.report_content && typeof normalizedFinal.report_content === "object" && !Array.isArray(normalizedFinal.report_content)
+    ? { ...normalizedFinal.report_content }
+    : {};
+  const finalIssueList = normalizedIssueList.issues.map((issue) => customerReportIssueFromAdjudicator(issue));
+  const issueLookup = buildIssueLookup(finalIssueList, normalizedIssueList.issues);
+  const priorityIds = normalizeStringArray(
+    reportContent.priority_issue_ids
+    || reportContent.priorityIssueIds
+    || normalizedConclusion.priority_issue_ids
+  );
+  const priorityActions = completePriorityIssues(
+    priorityIds.length ? normalizeResolvedIssueList(priorityIds, issueLookup) : normalizeResolvedIssueList(reportContent.priority_actions, issueLookup),
+    finalIssueList
+  ).map((issue) => customerReportIssueFromAdjudicator(issue));
+  const pdfTextSet = {
+    ...buildFallbackPdfTextSet(normalizedConclusion),
+    ...(normalizedConclusion.pdf_text_set || {}),
+    ...(reportContent.pdfTextSet || {}),
+    ...(reportContent.pdf_text_set || {})
+  };
+
+  normalizedFinal.report_content = {
+    ...reportContent,
+    source: reportContent.source || "v3_two_file_materializer",
+    submission_recommendation: reportContent.submission_recommendation || normalizedConclusion.submission_recommendation || "",
+    risk_level: reportContent.risk_level || normalizedConclusion.risk_level || "",
+    revision_workload: reportContent.revision_workload || normalizedConclusion.revision_workload || "",
+    severity_counts: { ...countSeverities(finalIssueList), total: finalIssueList.length },
+    issue_distribution: countIssuesByDimension(finalIssueList),
+    dimension_diagnosis: reportContent.dimension_diagnosis || normalizedConclusion.dimension_diagnosis || {},
+    manuscript_strengths: reportContent.manuscript_strengths || normalizedConclusion.manuscript_strengths || [],
+    major_weaknesses: reportContent.major_weaknesses || normalizedConclusion.major_weaknesses || [],
+    english_title: reportContent.english_title || normalizedConclusion.english_title || "",
+    chinese_title: reportContent.chinese_title || normalizedConclusion.chinese_title || "",
+    one_line_verdict: reportContent.one_line_verdict || normalizedConclusion.one_line_verdict || "",
+    risk_reason: reportContent.risk_reason || normalizedConclusion.risk_reason || "",
+    key_barriers: reportContent.key_barriers || normalizedConclusion.key_barriers || "",
+    publication_positioning: reportContent.publication_positioning || normalizedConclusion.publication_positioning || "",
+    target_score: reportContent.target_score || normalizedConclusion.target_score || "",
+    tier_justification: reportContent.tier_justification || normalizedConclusion.tier_justification || "",
+    score_summary: hasUsableScoreSummary(reportContent.score_summary) ? reportContent.score_summary : scoreSummaryFromConclusionParameters(normalizedConclusion),
+    priority_issue_ids: priorityIds,
+    priority_actions: priorityActions,
+    final_issue_list: finalIssueList,
+    pdf_text_set: normalizePdfTextSet(pdfTextSet),
+    artifact_completion_summary: reportContent.artifact_completion_summary || normalizedConclusion.artifact_completion_summary || null,
+    min_revision_advice: reportContent.min_revision_advice || normalizedConclusion.min_revision_advice || "",
+    issue_list_text: issueListText,
+    conclusion_parameters_text: conclusionParametersText
+  };
+
+  normalizedFinal.summary = normalizedFinal.summary || buildTwoFileSummary(normalizedConclusion, finalIssueList);
+  normalizedFinal.overall_conclusion = normalizedFinal.overall_conclusion || buildTwoFileOverallConclusion(normalizedConclusion, finalIssueList);
+  normalizedFinal.must_fix = normalizedFinal.must_fix.length ? normalizedFinal.must_fix : finalIssueList.filter((issue) => ["P0", "P1"].includes(normalizeSeverity(issue.severity)));
+  normalizedFinal.suggested_fix = normalizedFinal.suggested_fix.length ? normalizedFinal.suggested_fix : finalIssueList.filter((issue) => ["P2", "P3"].includes(normalizeSeverity(issue.severity)));
+  normalizedFinal.text_and_figure_comments = normalizedFinal.text_and_figure_comments.length ? normalizedFinal.text_and_figure_comments : finalIssueList.filter(isTextFigureDocxIssue);
+  normalizedFinal.compliance_risk = normalizedFinal.compliance_risk.length ? normalizedFinal.compliance_risk : finalIssueList.filter(isComplianceDocxIssue);
+  normalizedFinal.pre_submission_checklist = normalizedConclusion.pre_submission_checklist?.length
+    ? normalizedConclusion.pre_submission_checklist
+    : [];
+  normalizedFinal.final_review_text = normalizedFinal.final_review_text || normalizedFinal.overall_conclusion;
+  return normalizedFinal;
 }
 
 function normalizeIssue(item, stageKey) {
@@ -2681,9 +3812,145 @@ function buildMergedStageOutput(stage, issues, consistency) {
   );
 }
 
+function v4AgentMarker(index) {
+  return new RegExp(`^[ \\t]*(?:agent[ \\t_-]*${index}|Agent[ \\t_-]*${index}|Agent\\s*${index}|agent${index})\\.?(?:txt)?[ \\t]*[:：][ \\t]*`, "im");
+}
+
+function buildV4FinalJsonFromTextSources(issueListJson, conclusionParametersJson) {
+  const issues = Array.isArray(issueListJson?.issues) ? issueListJson.issues : [];
+  const priorityIssues = collectStrictSourcePriorityIssues(conclusionParametersJson.priority_issue_ids || [], issues);
+  const mustFix = issues.filter((issue) => ["P0", "P1"].includes(normalizeSeverity(issue.severity)));
+  const suggestedFix = issues.filter((issue) => !["P0", "P1"].includes(normalizeSeverity(issue.severity)));
+  const textAndFigure = issues.filter((issue) => issueLooksLikeFigureTableMaterial(issue));
+  const compliance = issues.filter((issue) => issueLooksLikeSubmissionMaterial(issue));
+  const scoreSummary = scoreSummaryFromConclusionParameters(conclusionParametersJson);
+  const finalReviewText = [
+    "投稿前预审质控报告与修订优先级建议",
+    "",
+    "一、摘要",
+    conclusionParametersJson.summary,
+    "",
+    "二、总体判断",
+    conclusionParametersJson.overall_conclusion,
+    "",
+    "三、优先处理问题",
+    priorityIssues.map((issue, index) => renderExpandedIssueText(issue, index, { prefix: "优先问题" })).join("\n\n"),
+    "",
+    "四、完整问题清单",
+    issues.map((issue, index) => renderExpandedIssueText(issue, index, { prefix: "问题" })).join("\n\n")
+  ].filter(Boolean).join("\n");
+  return normalizeFinalJson({
+    summary: conclusionParametersJson.summary,
+    overall_conclusion: conclusionParametersJson.overall_conclusion,
+    must_fix: mustFix,
+    suggested_fix: suggestedFix,
+    text_and_figure_comments: textAndFigure,
+    compliance_risk: compliance,
+    pre_submission_checklist: conclusionParametersJson.pre_submission_checklist,
+    final_review_text: finalReviewText,
+    report_content: {
+      source: "v4_txt_source_only",
+      score_summary: scoreSummary,
+      final_issue_list: issues,
+      priority_actions: priorityIssues,
+      priority_issue_ids: conclusionParametersJson.priority_issue_ids || [],
+      severity_counts: issueListJson.severity_counts || { ...countSeverities(issues), total: issues.length },
+      issue_distribution: issueListJson.issue_distribution || countIssuesByDimension(issues),
+      submission_recommendation: conclusionParametersJson.submission_recommendation,
+      risk_level: conclusionParametersJson.risk_level,
+      revision_workload: conclusionParametersJson.revision_workload,
+      manuscript_strengths: conclusionParametersJson.manuscript_strengths || [],
+      major_weaknesses: conclusionParametersJson.major_weaknesses || [],
+      dimension_diagnosis: conclusionParametersJson.dimension_diagnosis || {},
+      pre_submission_checklist: conclusionParametersJson.pre_submission_checklist || [],
+      min_revision_advice: conclusionParametersJson.min_revision_advice || "",
+      english_title: conclusionParametersJson.english_title || "",
+      chinese_title: conclusionParametersJson.chinese_title || "",
+      one_line_verdict: conclusionParametersJson.one_line_verdict || "",
+      risk_reason: conclusionParametersJson.risk_reason || "",
+      key_barriers: conclusionParametersJson.key_barriers || "",
+      publication_positioning: conclusionParametersJson.publication_positioning || "",
+      target_score: conclusionParametersJson.target_score || "",
+      tier_justification: conclusionParametersJson.tier_justification || ""
+    }
+  });
+}
+
+function parseV4TxtOutputPackage(text) {
+  const sections = extractMarkedSections(text, [
+    { key: "runnerMetadata", label: "runner_metadata JSON", pattern: /^[ \t]*runner_metadata[ \t]+JSON[ \t]*:[ \t]*/im, optional: true },
+    { key: "artifactManifest", label: "artifact_manifest JSON", pattern: /^[ \t]*artifact_manifest[ \t]+JSON[ \t]*:[ \t]*/im, optional: true },
+    { key: "agent1", label: "agent1.txt", pattern: v4AgentMarker(1) },
+    { key: "agent2", label: "agent2.txt", pattern: v4AgentMarker(2) },
+    { key: "agent3", label: "agent3.txt", pattern: v4AgentMarker(3) },
+    { key: "agent4", label: "agent4.txt", pattern: v4AgentMarker(4) },
+    { key: "agent5", label: "agent5.txt", pattern: v4AgentMarker(5) },
+    { key: "issueListText", label: "问题清单.txt", pattern: /^[ \t]*(?:问题清单\.txt|issue_list_txt)[ \t]*[:：][ \t]*/im },
+    { key: "adjudicatorParametersText", label: "裁决者参数.txt", pattern: /^[ \t]*(?:裁决者参数\.txt|结论参数\.txt|裁决报告\.txt|adjudicator_parameters_txt|conclusion_parameters_txt)[ \t]*[:：][ \t]*/im }
+  ]);
+  const runnerMetadata = sections.runnerMetadata ? parseLooseJson(sections.runnerMetadata) : null;
+  const artifactManifest = sections.artifactManifest ? parseLooseJson(sections.artifactManifest) : null;
+  const v4AgentReportsText = {
+    agent1: sections.agent1.trim(),
+    agent2: sections.agent2.trim(),
+    agent3: sections.agent3.trim(),
+    agent4: sections.agent4.trim(),
+    agent5: sections.agent5.trim()
+  };
+  const issueListText = sections.issueListText.trim();
+  const issueListJson = normalizeV4IssueListFromText(issueListText);
+  const conclusionParametersText = sections.adjudicatorParametersText.trim();
+  const conclusionParametersJson = normalizeV4AdjudicatorParametersFromText(conclusionParametersText, issueListJson);
+  const finalJson = buildV4FinalJsonFromTextSources(issueListJson, conclusionParametersJson);
+  const stageOutputs = REVIEW_STAGES.map((stage, index) => {
+    const output = v4AgentReportsText[`agent${index + 1}`] || "";
+    const issues = parseAgentTxtIssues(output, stage.key);
+    return {
+      stage: stage.key,
+      title: stage.title,
+      issues,
+      output,
+      issueCount: issues.length
+    };
+  });
+  return {
+    mode: "v4_txt",
+    runnerMetadata: {
+      ...(runnerMetadata || {}),
+      workflow_version: "v4-txt-source-only",
+      source_contract: "pdf-from-issue-list-and-adjudicator-txt-only"
+    },
+    artifactManifest,
+    v4AgentReportsText,
+    agentReports: Object.fromEntries(REVIEW_STAGES.map((stage, index) => [stage.key, v4AgentReportsText[`agent${index + 1}`] || ""])),
+    stageOutputs,
+    issueListText,
+    issueListJson,
+    v4ParsedIssueList: issueListJson,
+    cleanerOutput: ["问题清单.txt:", issueListText].join("\n"),
+    conclusionParametersText,
+    adjudicatorParametersText: conclusionParametersText,
+    conclusionParametersJson,
+    v4ParsedAdjudicatorParameters: conclusionParametersJson,
+    adjudicatorOutput: ["裁决者参数.txt:", conclusionParametersText].join("\n"),
+    adjudicatorJson: conclusionParametersJson,
+    finalOutput: "",
+    finalJson
+  };
+}
+
 function parseSkillOutputPackage(packageText) {
   const text = String(packageText || "").trim();
   if (!text) throw new Error("请粘贴 skills 完整输出");
+
+  if (/^[ \t]*(?:agent[ \t_-]*1|Agent[ \t_-]*1|agent1)\.?(?:txt)?[ \t]*[:：]/im.test(text)
+    || /^[ \t]*(?:问题清单\.txt|裁决者参数\.txt)[ \t]*[:：]/im.test(text)) {
+    return parseV4TxtOutputPackage(text);
+  }
+
+  if (/^[ \t]*issue_list[ \t]+JSON[ \t]*:/im.test(text) || /^[ \t]*conclusion_parameters[ \t]+JSON[ \t]*:/im.test(text) || /^[ \t]*final_report[ \t]+JSON[ \t]*:/im.test(text)) {
+    return parseV3SkillOutputPackage(text);
+  }
 
   if (/^[ \t]*runner_metadata JSON[ \t]*:/im.test(text) || /^[ \t]*artifact_manifest JSON[ \t]*:/im.test(text) || /^[ \t]*agent_merged_issue_lists[ \t]*:/im.test(text)) {
     return parseV21SkillOutputPackage(text);
@@ -2738,6 +4005,104 @@ function parseSkillOutputPackage(packageText) {
   };
 }
 
+function parseV3SkillOutputPackage(text) {
+  const sections = extractMarkedSections(text, [
+    { key: "runnerMetadata", label: "runner_metadata JSON", pattern: /^[ \t]*runner_metadata[ \t]+JSON[ \t]*:[ \t]*/im, optional: true },
+    { key: "artifactManifest", label: "artifact_manifest JSON", pattern: /^[ \t]*artifact_manifest[ \t]+JSON[ \t]*:[ \t]*/im },
+    { key: "agentReports", label: "agent_reports", pattern: /^[ \t]*agent_reports[ \t]*:[ \t]*/im },
+    { key: "issueListText", label: "issue_list_txt", pattern: /^[ \t]*(?:issue_list_txt|问题清单\.txt)[ \t]*:[ \t]*/im },
+    { key: "issueListJson", label: "issue_list JSON", pattern: /^[ \t]*issue_list[ \t]+JSON[ \t]*:[ \t]*/im },
+    { key: "conclusionParametersText", label: "conclusion_parameters_txt", pattern: /^[ \t]*(?:conclusion_parameters_txt|结论参数\.txt|裁决报告\.txt|adjudicator_report_txt)[ \t]*:[ \t]*/im },
+    { key: "conclusionParametersJson", label: "conclusion_parameters JSON", pattern: /^[ \t]*conclusion_parameters[ \t]+JSON[ \t]*:[ \t]*/im },
+    { key: "finalOutput", label: "final_report JSON", pattern: /^[ \t]*final_report[ \t]+JSON[ \t]*:[ \t]*/im, optional: true }
+  ]);
+
+  const runnerMetadata = sections.runnerMetadata ? parseLooseJson(sections.runnerMetadata) : null;
+  const artifactManifest = parseLooseJson(sections.artifactManifest);
+  const agentReports = parseLooseJson(sections.agentReports);
+  const issueListText = sections.issueListText.trim();
+  const issueListJson = enrichIssueListJsonFromText(parseLooseJson(sections.issueListJson), issueListText);
+  const conclusionParametersText = sections.conclusionParametersText.trim();
+  const conclusionParametersJson = normalizeConclusionParametersJson(parseLooseJson(sections.conclusionParametersJson));
+  const legacyFinalJson = sections.finalOutput ? parseStrictFinalJson(sections.finalOutput) : null;
+  const finalJson = materializeV3FinalJson(legacyFinalJson, issueListJson, conclusionParametersJson, issueListText, conclusionParametersText);
+  const stageOutputs = REVIEW_STAGES.map((stage) => {
+    const raw = agentReports?.[stage.key] || agentReports?.[stage.title] || "";
+    const output = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+    const issues = parseStageIssues(output, stage.key);
+    return {
+      stage: stage.key,
+      title: stage.title,
+      issues,
+      output,
+      issueCount: issues.length
+    };
+  });
+
+  return {
+    mode: "v3",
+    runnerMetadata,
+    artifactManifest,
+    agentReports,
+    stageOutputs,
+    issueListText,
+    issueListJson,
+    cleanerOutput: [
+      "问题清单.txt:",
+      issueListText,
+      "",
+      "issue_list JSON:",
+      JSON.stringify(issueListJson, null, 2)
+    ].join("\n"),
+    conclusionParametersText,
+    conclusionParametersJson,
+    adjudicatorOutput: [
+      "结论参数.txt:",
+      conclusionParametersText,
+      "",
+      "conclusion_parameters JSON:",
+      JSON.stringify(conclusionParametersJson, null, 2)
+    ].join("\n"),
+    adjudicatorJson: conclusionParametersJson,
+    finalOutput: sections.finalOutput?.trim() || "",
+    finalJson
+  };
+}
+
+function parseV3TwoFileReportOutput(text, task = {}) {
+  const sections = extractMarkedSections(text, [
+    { key: "issueListText", label: "issue_list_txt", pattern: /^[ \t]*(?:issue_list_txt|问题清单\.txt)[ \t]*:[ \t]*/im, optional: true },
+    { key: "issueListJson", label: "issue_list JSON", pattern: /^[ \t]*issue_list[ \t]+JSON[ \t]*:[ \t]*/im, optional: true },
+    { key: "conclusionParametersText", label: "conclusion_parameters_txt", pattern: /^[ \t]*(?:conclusion_parameters_txt|结论参数\.txt)[ \t]*:[ \t]*/im },
+    { key: "conclusionParametersJson", label: "conclusion_parameters JSON", pattern: /^[ \t]*conclusion_parameters[ \t]+JSON[ \t]*:[ \t]*/im }
+  ]);
+  const issueListText = sections.issueListText?.trim() || task.issueListText || "";
+  const issueListJson = sections.issueListJson
+    ? enrichIssueListJsonFromText(parseLooseJson(sections.issueListJson), issueListText)
+    : enrichIssueListJsonFromText(task.issueListJson || {}, issueListText);
+  if (!issueListJson.issues.length) {
+    throw new Error("缺少 issue_list JSON，无法仅凭结论参数生成完整问题清单");
+  }
+  const conclusionParametersText = sections.conclusionParametersText.trim();
+  const conclusionParametersJson = normalizeConclusionParametersJson(parseLooseJson(sections.conclusionParametersJson));
+  const finalJson = materializeV3ReportJsonFromFiles(issueListJson, conclusionParametersJson, issueListText, conclusionParametersText, null, task.artifactManifest);
+  return {
+    issueListText,
+    issueListJson,
+    conclusionParametersText,
+    conclusionParametersJson,
+    adjudicatorOutput: [
+      "结论参数.txt:",
+      conclusionParametersText,
+      "",
+      "conclusion_parameters JSON:",
+      JSON.stringify(conclusionParametersJson, null, 2)
+    ].join("\n"),
+    adjudicatorJson: conclusionParametersJson,
+    finalJson
+  };
+}
+
 function parseV21SkillOutputPackage(text) {
   const sections = extractMarkedSections(text, [
     { key: "runnerMetadata", label: "runner_metadata JSON", pattern: /^[ \t]*runner_metadata[ \t]+JSON[ \t]*:[ \t]*/im, optional: true },
@@ -2754,7 +4119,7 @@ function parseV21SkillOutputPackage(text) {
   const agentRuns = parseLooseJson(sections.agentRuns);
   const consistencyReports = parseLooseJson(sections.consistencyReports);
   const mergedIssueLists = parseLooseJson(sections.mergedIssueLists);
-  const stageOutputs = REVIEW_STAGES.map((stage) => {
+  const stageOutputs = V21_REVIEW_STAGES.map((stage) => {
     const raw = mergedIssueLists?.[stage.key] || mergedIssueLists?.[stage.title] || [];
     const issues = Array.isArray(raw) ? raw.map((item) => normalizeIssue(item, stage.key)) : parseStageIssues(JSON.stringify(raw), stage.key);
     const consistency = consistencyReports?.[stage.key] || {};
@@ -3059,7 +4424,10 @@ function mergeIssueWithNonEmptyOverride(base, override) {
       if (Object.keys(value).length) result[key] = value;
       continue;
     }
-    if (String(value ?? "").trim()) result[key] = value;
+    const text = String(value ?? "").trim();
+    if (!text) continue;
+    if (placeholderIssueText(text) && result[key] && !placeholderIssueText(result[key])) continue;
+    result[key] = value;
   }
   return result;
 }
@@ -3437,7 +4805,7 @@ function validateFinalScoreSummary(finalJson = {}, finalIssueCount = 0) {
     normalized.overallScore,
     ...normalized.dimensionScores.map((item) => item.score)
   ].filter((value) => value !== null);
-  if (allScores.length === PDF_DIMENSIONS.length + 1 && allScores.every((value) => value === 0)) {
+  if (allScores.length === SCORE_DIMENSIONS.length + 1 && allScores.every((value) => value === 0)) {
     errors.push("终稿 report_content.score_summary 全部为 0，疑似保留 schema 示例占位；已有最终问题池时必须输出实际模型模糊评分。");
   }
 
@@ -3683,7 +5051,7 @@ function buildDocxIssueSections(task, finalJson) {
 
 function renderScoreSummary(scoreSummary) {
   if (!scoreSummary?.hasOverallScore) {
-    return [paragraph("未生成模型评分，请使用新版终稿输出重新生成。")];
+    return [paragraph("未生成模型评分，请使用新版裁决者结论参数重新生成。")];
   }
   const lines = [
     `综合评分：${scoreSummary.overallScore}`,
@@ -3956,7 +5324,7 @@ function stageTitleForKey(stageKey) {
 function pushStageRunOutputLines(lines, task, options = {}) {
   const runs = Array.isArray(task.stageRunOutputs) ? task.stageRunOutputs : [];
   if (!runs.length) return;
-  (options.subsection ? pushSubsection : pushSection)(lines, "V2.1 Agent 双跑原始输出");
+  (options.subsection ? pushSubsection : pushSection)(lines, "V3 Agent 原始输出");
 
   const knownKeys = REVIEW_STAGES.map((stage) => stage.key);
   const extraKeys = Array.from(new Set(runs.map((item) => item.stage).filter((stage) => !knownKeys.includes(stage))));
@@ -4028,7 +5396,7 @@ function pushConsistencyReportLines(lines, task, options = {}) {
 function pushMergedStageOutputLines(lines, task, options = {}) {
   const outputs = Array.isArray(task.stageOutputs) ? task.stageOutputs : [];
   if (!outputs.length) return;
-  (options.subsection ? pushSubsection : pushSection)(lines, "V2.1 Agent 合并问题清单");
+  (options.subsection ? pushSubsection : pushSection)(lines, "V3 Agent 结构化问题");
 
   for (const item of outputs) {
     lines.push("-".repeat(56));
@@ -4041,7 +5409,7 @@ function pushMergedStageOutputLines(lines, task, options = {}) {
     lines.push(`latency：${item.latencyMs ?? "-"} ms`);
     lines.push(`overall_overlap：${item.consistency?.overallOverlapRate ?? "-"}`);
     lines.push(`p0p1_overlap：${item.consistency?.p0p1OverlapRate ?? "-"}`);
-    lines.push("合并问题：");
+    lines.push("结构化问题：");
     const issues = Array.isArray(item.issues) ? item.issues : [];
     pushIssueLines(lines, issues, { stageKey: item.stage, emptyText: "未发现结构化问题。" });
     if (!issues.length && cleanOutputText(item.output)) {
@@ -4050,6 +5418,21 @@ function pushMergedStageOutputLines(lines, task, options = {}) {
     }
     lines.push("");
   }
+}
+
+function pushCleanerOutputLines(lines, task) {
+  const meta = task.cleanerOutput;
+  lines.push(`stage：${meta?.stage || CLEANER_STAGE.key}`);
+  lines.push(`标题：${meta?.title || CLEANER_STAGE.title}`);
+  if (meta?.model) lines.push(`模型：${meta.model}`);
+  if (meta?.prompt_id) lines.push(`prompt_id：${meta.prompt_id}`);
+  if (meta?.tokens) lines.push(`token：${formatTokenSummary(meta.tokens)}`);
+  lines.push("");
+  lines.push("问题清单.txt：");
+  lines.push(cleanOutputText(task.issueListText || "未记录问题清单文本。"));
+  lines.push("");
+  pushPdfIssueReadableLines(lines, "issue_list JSON 结构化问题池", task.issueListJson?.issues, { emptyText: "未记录结构化问题池。" });
+  lines.push("");
 }
 
 function pushSimpleListLines(lines, title, items, emptyText = "未记录。") {
@@ -4171,8 +5554,8 @@ function pushAdjudicatorOutputLines(lines, task) {
   const meta = task.adjudicatorOutput;
   const adjudicatorJson = getAdjudicatorJson(task);
   if (!meta && !adjudicatorJson) {
-    lines.push("当前任务未记录独立裁决者裁定输出（adjudicator_review）。");
-    lines.push("说明：当前兼容流程可能仍由 final_adjudication 直接基于六 Agent 合并清单生成终稿。");
+    lines.push("当前任务未记录裁决者参数输出。");
+    lines.push("说明：旧兼容流程可能仍由终稿输出直接生成报告。");
     lines.push("");
     return;
   }
@@ -4183,7 +5566,6 @@ function pushAdjudicatorOutputLines(lines, task) {
     lines.push(`模型：${meta.model || "-"}`);
     lines.push(`prompt_id：${meta.prompt_id || "-"}`);
     lines.push(`prompt_version：${meta.prompt_version || "-"}`);
-    lines.push(`global_prompt_id：${meta.global_prompt_id || "-"}`);
     lines.push(`token：${formatTokenSummary(meta.tokens)}`);
     lines.push(`调用强度：${formatRequestSettings(meta.requestSettings)}`);
     lines.push(`finish_reason：${meta.finishReason ?? "-"}`);
@@ -4198,7 +5580,20 @@ function pushAdjudicatorOutputLines(lines, task) {
     return;
   }
 
-  lines.push(`裁决摘要：${adjudicatorJson.adjudication_summary || "未记录"}`);
+  if (String(adjudicatorJson.schema_version || "").startsWith("v3.conclusion_parameters")) {
+    lines.push(`综合评分：${adjudicatorJson.overall_score ?? "-"}`);
+    lines.push(`评分标签：${adjudicatorJson.overall_score_label || "-"}`);
+    lines.push(`评分理由：${adjudicatorJson.overall_score_rationale || "-"}`);
+    lines.push(`投稿建议：${adjudicatorJson.submission_recommendation || "-"}`);
+    lines.push(`风险等级：${adjudicatorJson.risk_level || "-"}`);
+    lines.push(`修订工作量：${adjudicatorJson.revision_workload || "-"}`);
+    pushSimpleListLines(lines, "优先问题 ID", adjudicatorJson.priority_issue_ids, "未记录优先问题 ID。");
+    pushCountMapLines(lines, "六维诊断 dimension_diagnosis", adjudicatorJson.dimension_diagnosis);
+    lines.push("");
+    return;
+  }
+
+  lines.push(`参数摘要：${adjudicatorJson.adjudication_summary || adjudicatorJson.overall_score_rationale || "未记录"}`);
   const judgment = adjudicatorJson.overall_judgment || {};
   if (judgment && typeof judgment === "object") {
     lines.push(`总体判断：${judgment.submission_recommendation || "-"}｜风险：${judgment.risk_level || "-"}｜修订工作量：${judgment.revision_workload || "-"}`);
@@ -4276,15 +5671,19 @@ function pushFinalOutputLines(lines, task) {
   if (!finalJson) {
     const raw = cleanOutputText(meta?.output || meta || "");
     if (raw) {
-      lines.push("终稿输出未记录结构化 finalJson，以下为清洗后的原始文本：");
+      lines.push("旧终稿输出未记录结构化 finalJson，以下为清洗后的原始文本：");
       lines.push(raw);
     } else {
-      lines.push("当前任务未记录终稿输出。");
+      lines.push("当前任务尚未物化报告数据。");
     }
     lines.push("");
     return;
   }
 
+  if (!meta) {
+    lines.push("报告数据来源：问题清单.txt / issue_list JSON + 结论参数.txt / conclusion_parameters JSON 后端物化。");
+    lines.push("");
+  }
   lines.push(`200字以内摘要：${finalJson.summary || "未记录"}`);
   lines.push(`总体预审结论：${finalJson.overall_conclusion || "未记录"}`);
   lines.push("");
@@ -4295,8 +5694,10 @@ function pushFinalOutputLines(lines, task) {
   pushSimpleListLines(lines, "正文 / 图表修改意见 text_and_figure_comments", finalJson.text_and_figure_comments, "未记录正文 / 图表修改意见。");
   lines.push("");
   pushSimpleListLines(lines, "合规与风险提示 compliance_risk", finalJson.compliance_risk, "未记录合规与风险提示。");
-  lines.push("");
-  pushSimpleListLines(lines, "投稿前检查清单 pre_submission_checklist", finalJson.pre_submission_checklist, "未记录投稿前检查清单。");
+  if (Array.isArray(finalJson.pre_submission_checklist) && finalJson.pre_submission_checklist.length) {
+    lines.push("");
+    pushSimpleListLines(lines, "投稿前检查清单 pre_submission_checklist", finalJson.pre_submission_checklist, "");
+  }
   lines.push("");
   lines.push("完整报告正文 final_review_text：");
   lines.push(cleanOutputText(finalJson.final_review_text || "未记录完整报告正文。"));
@@ -4304,26 +5705,26 @@ function pushFinalOutputLines(lines, task) {
   const reportContent = finalJson.report_content;
   if (reportContent && typeof reportContent === "object" && !Array.isArray(reportContent)) {
     lines.push("");
-    pushSubsection(lines, "终稿结构化 report_content 摘要");
+    pushSubsection(lines, "报告物化 report_content 摘要");
     lines.push(`来源：${reportContent.source || "-"}`);
     lines.push(`投稿建议：${reportContent.submission_recommendation || "-"}`);
     lines.push(`风险等级：${reportContent.risk_level || "-"}`);
     lines.push(`修订工作量：${reportContent.revision_workload || "-"}`);
-    pushCountMapLines(lines, "终稿严重程度统计 severity_counts", reportContent.severity_counts);
+    pushCountMapLines(lines, "报告严重程度统计 severity_counts", reportContent.severity_counts);
     const finalPoolIssues = collectFinalContentIssues(task);
     if (finalPoolIssues.length && reportContent.severity_counts) {
       const finalPoolCounts = countSeverities(finalPoolIssues);
       if (!severityCountsEqual(reportContent.severity_counts, finalPoolCounts)) {
-        lines.push(`统计口径提示：终稿 severity_counts 与最终问题池重新计算结果不一致；客户版 PDF 以最终问题池为准。终稿字段：${formatSeverityCountMap(reportContent.severity_counts)}；最终问题池：${formatSeverityCountMap(finalPoolCounts)}。`);
+        lines.push(`统计口径提示：report_content severity_counts 与最终问题池重新计算结果不一致；客户版 PDF 以最终问题池为准。report_content 字段：${formatSeverityCountMap(reportContent.severity_counts)}；最终问题池：${formatSeverityCountMap(finalPoolCounts)}。`);
       } else {
-        lines.push(`统计口径提示：终稿 severity_counts 与最终问题池一致（${formatSeverityCountMap(finalPoolCounts)}）。`);
+        lines.push(`统计口径提示：report_content severity_counts 与最终问题池一致（${formatSeverityCountMap(finalPoolCounts)}）。`);
       }
     }
-    pushCountMapLines(lines, "终稿维度分布 issue_distribution", reportContent.issue_distribution);
-    pushCountMapLines(lines, "终稿六维诊断 dimension_diagnosis", reportContent.dimension_diagnosis);
-    pushPdfIssueReadableLines(lines, "终稿优先处理问题 priority_actions", reportContent.priority_actions, { emptyText: "未记录终稿优先处理问题。" });
+    pushCountMapLines(lines, "报告维度分布 issue_distribution", reportContent.issue_distribution);
+    pushCountMapLines(lines, "报告六维诊断 dimension_diagnosis", reportContent.dimension_diagnosis);
+    pushPdfIssueReadableLines(lines, "报告优先处理问题 priority_actions", reportContent.priority_actions, { emptyText: "未记录优先处理问题。" });
     lines.push("");
-    pushPdfIssueReadableLines(lines, "终稿完整问题池 final_issue_list", reportContent.final_issue_list, { emptyText: "未记录终稿完整问题池。" });
+    pushPdfIssueReadableLines(lines, "报告完整问题池 final_issue_list", reportContent.final_issue_list, { emptyText: "未记录完整问题池。" });
   }
   lines.push("");
 }
@@ -4418,12 +5819,16 @@ function dimensionForCategory(category, primaryDimension = "") {
   if (direct) return direct;
   const text = raw.replace(/\s+/g, "");
   const matchers = [
-    [/选题|创新|selection/i, "selection_innovation"],
-    [/临床|方法|设计|clinical/i, "clinical_methods"],
-    [/统计|证据|statistical/i, "statistical_results"],
-    [/数值|一致|audit|numerical/i, "numerical_audit"],
-    [/图表|图片|figure|visual/i, "figure_table_visual_audit"],
-    [/投稿|合规|表达|安全|submission|safety/i, "submission_safety_expression"]
+    [/选题|创新|合理|selection|topic/i, "topic_innovation_rationale"],
+    [/统计|证据|statistical|statistics/i, "statistical_details"],
+    [/数值|一致|audit|numerical|fulltext/i, "fulltext_consistency_numerical_audit"],
+    [/图表|图片|figure|visual|table/i, "figure_table_quality"],
+    [/投稿|合规|表达|安全|submission|safety|misc|伦理|注册|声明/i, "misc_compliance_expression"],
+    [/clinical_methods|临床方法|研究设计与临床逻辑/i, "topic_innovation_rationale"],
+    [/statistical_results/i, "statistical_details"],
+    [/numerical_audit/i, "fulltext_consistency_numerical_audit"],
+    [/figure_table_visual_audit/i, "figure_table_quality"],
+    [/submission_safety_expression/i, "misc_compliance_expression"]
   ];
   const found = matchers.find(([pattern]) => pattern.test(text));
   return PDF_DIMENSIONS.find((item) => item.key === found?.[1]) || PDF_DIMENSIONS[0];
@@ -4441,9 +5846,9 @@ function normalizePdfIssue(item, fallbackCategory = "general", fallbackSeverity 
     dimensionKey: dimension.key,
     dimensionTitle: dimension.title,
     issue,
-    location: String(value.location || value.position || "未标明").trim(),
-    evidence: String(value.evidence || value.explanation || value.detail || value.reason || "需人工复核").trim(),
-    recommendation: String(value.recommendation || value.suggestion || value.fix || "建议按终稿输出意见进行低成本修订").trim(),
+    location: String(value.location || value.position || "").trim(),
+    evidence: String(value.evidence || value.explanation || value.detail || value.reason || "").trim(),
+    recommendation: String(value.recommendation || value.suggestion || value.fix || "").trim(),
     issue_narrative: String(value.issue_narrative || value.issueNarrative || value.narrative || "").trim(),
     risk: String(value.risk || value.submission_risk || value.submissionRisk || value.risk_analysis || value.riskAnalysis || "").trim(),
     risk_analysis: String(value.risk_analysis || value.riskAnalysis || "").trim(),
@@ -4493,8 +5898,14 @@ function buildIssueLookup(...issueGroups) {
     const values = Array.isArray(group) ? group : [];
     for (const item of values) {
       if (!hasIssueDetail(item)) continue;
-      const id = issueReferenceId(item);
-      if (id && !lookup.has(id)) lookup.set(id, item);
+      const keys = [
+        issueReferenceId(item),
+        ...normalizeStringArray(item.source_issue_ids || item.sourceIssueIds || item.source_ids || item.sourceIds)
+      ];
+      for (const key of keys) {
+        const id = String(key || "").trim();
+        if (id && !lookup.has(id)) lookup.set(id, item);
+      }
     }
   }
   return lookup;
@@ -4626,6 +6037,13 @@ function collectPriorityIssues(task, reportIssues) {
   return completePriorityIssues(reportIssues.filter((issue) => ["P0", "P1"].includes(issue.severity)), reportIssues);
 }
 
+function collectStrictSourcePriorityIssues(priorityIssueIds, reportIssues) {
+  const ids = normalizeStringArray(priorityIssueIds);
+  if (!ids.length) return [];
+  const lookup = buildIssueLookup(reportIssues);
+  return dedupePdfIssues(ids.map((id) => lookup.get(id)).filter(Boolean).map((issue) => normalizePdfIssue(issue)));
+}
+
 function isThinFinalReviewText(text, priorityIssues = [], reportIssues = []) {
   const value = String(text || "").trim();
   if (!value) return reportIssues.length > 0 || priorityIssues.length > 0;
@@ -4642,9 +6060,10 @@ function isThinFinalReviewText(text, priorityIssues = [], reportIssues = []) {
   return false;
 }
 
-function issueSubmissionRiskText(issue) {
+function issueSubmissionRiskText(issue, options = {}) {
   const explicit = customerFacingText(issue.risk || issue.submission_risk || issue.submissionRisk || issue.risk_analysis || "");
   if (explicit) return explicit;
+  if (options.strictSource) return "未提供";
   if (issue.severity === "P0") {
     return "该问题可能构成投稿前阻断级风险，若不处理，容易使编辑或外审认为稿件核心结论、合规基础或材料完整性尚不具备直接投稿条件。";
   }
@@ -4657,14 +6076,16 @@ function issueSubmissionRiskText(issue) {
   return "该问题属于低影响清稿或呈现优化项，处理后有助于提高成稿规范性和阅读体验。";
 }
 
-function issueRevisionAdviceText(issue) {
+function issueRevisionAdviceText(issue, options = {}) {
   const parts = [];
   const recommendation = customerFacingText(issue.recommendation || "");
   if (recommendation) parts.push(recommendation);
   if (Array.isArray(issue.revision_path) && issue.revision_path.length) {
     parts.push(issue.revision_path.map(customerFacingText).filter(Boolean).join("；"));
   }
-  return parts.filter(Boolean).join("；") || "建议按终稿结构化问题清单逐项补充、统一或降调相关内容，并在投稿前复核对应章节。";
+  const explicit = parts.filter(Boolean).join("；");
+  if (explicit) return explicit;
+  return options.strictSource ? "未提供" : "建议按终稿结构化问题清单逐项补充、统一或降调相关内容，并在投稿前复核对应章节。";
 }
 
 function cleanCustomerIssueNarrative(value) {
@@ -4684,31 +6105,33 @@ function cleanCustomerIssueNarrative(value) {
     .join(" ");
 }
 
-function customerIssueLocationText(issue) {
+function customerIssueLocationText(issue, options = {}) {
   const location = customerFacingText(issue.location || "");
   const quotes = Array.isArray(issue.evidence_quotes)
     ? issue.evidence_quotes.map(customerFacingText).filter(Boolean)
     : [];
   if (location && !/需人工复核|未提供|不详/.test(location)) return location;
+  if (options.strictSource) return location || "未提供";
   if (quotes.length) return `${location || "需人工复核具体位置"}；可检索片段：${quotes.slice(0, 2).join("；")}`;
   return location || "需人工复核具体位置";
 }
 
-function customerIssueWhyText(issue) {
+function customerIssueWhyText(issue, options = {}) {
   return customerFacingText(issue.explanation || issue.detail || "")
     || cleanCustomerIssueNarrative(issue.issue_narrative)
-    || customerFacingText(issue.evidence || issue.reason || "需人工复核问题依据。");
+    || customerFacingText(issue.evidence || issue.reason || (options.strictSource ? "未提供" : "需人工复核问题依据。"));
 }
 
-function buildCustomerIssueView(issue, index) {
+function buildCustomerIssueView(issue, index, options = {}) {
   return {
+    id: customerFacingText(issue.id || issue.issue_id || issue.issueId || ""),
     severity: normalizeSeverity(issue.severity || "P2"),
     dimensionTitle: customerFacingText(issue.dimensionTitle || issue.primary_dimension || issue.category || "综合问题"),
     title: customerFacingText(issue.issue || issue.title || `问题 ${index + 1}`),
-    location: customerIssueLocationText(issue),
-    why: customerIssueWhyText(issue),
-    submissionRisk: issueSubmissionRiskText(issue),
-    revisionAdvice: issueRevisionAdviceText(issue)
+    location: customerIssueLocationText(issue, options),
+    why: customerIssueWhyText(issue, options),
+    submissionRisk: issueSubmissionRiskText(issue, options),
+    revisionAdvice: issueRevisionAdviceText(issue, options)
   };
 }
 
@@ -4737,7 +6160,7 @@ function buildExpandedFinalReviewText(task, priorityIssues, reportIssues) {
     ? `总体评分：${scoreSummary.overallScore}/100。${scoreSummary.overallScoreLabel || ""}${scoreSummary.overallScoreRationale ? ` ${scoreSummary.overallScoreRationale}` : ""}`.trim()
     : "总体评分：未生成模型评分。";
 
-  return [
+  const sections = [
     "投稿前预审质控报告与修改意见",
     "",
     "一、报告基本信息与总体判断",
@@ -4765,11 +6188,16 @@ function buildExpandedFinalReviewText(task, priorityIssues, reportIssues) {
     "五、完整问题清单",
     reportIssues.length
       ? reportIssues.map((issue, index) => renderExpandedIssueText(issue, index, { prefix: "问题" })).join("\n\n")
-      : "暂无结构化完整问题清单。",
-    "",
-    "六、投稿前检查清单",
-    checklist.length ? checklist.map((item, index) => `${index + 1}. ${customerFacingText(toPlainReportText(item))}`).join("\n") : "暂无投稿前检查清单。"
-  ].join("\n");
+      : "暂无结构化完整问题清单。"
+  ];
+  if (checklist.length) {
+    sections.push(
+      "",
+      "六、投稿前检查清单",
+      checklist.map((item, index) => `${index + 1}. ${customerFacingText(toPlainReportText(item))}`).join("\n")
+    );
+  }
+  return sections.join("\n");
 }
 
 function ensureExpandedFinalReviewText(task) {
@@ -4843,6 +6271,20 @@ function issueLooksLikeFigureTableMaterial(issue) {
   return /图|表|Figure|Fig\.|Table|legend|caption|图片|图注|表格|坐标轴|分辨率|流程图/i.test(text);
 }
 
+function issueLooksLikeSubmissionMaterial(issue) {
+  const text = [
+    issue.dimensionTitle,
+    issue.category,
+    issue.issue,
+    issue.title,
+    issue.location,
+    issue.evidence,
+    issue.explanation,
+    issue.recommendation
+  ].filter(Boolean).join(" ");
+  return /Title page|Declarations?|References?|STROBE|checklist|ethic|consent|COI|conflict|funding|author contribution|acknowledg|data availability|cover letter|ORCID|word count|占位符|声明|伦理|知情同意|参考文献|补充材料|投稿材料|题首页|作者信息|通讯作者|基金|利益冲突|数据可用性|图表编号|图号|表号|编号闭合/i.test(text);
+}
+
 function normalizeCustomerTextList(value) {
   if (Array.isArray(value)) {
     return value.map((item) => toPlainReportText(item)).filter(Boolean);
@@ -4851,28 +6293,110 @@ function normalizeCustomerTextList(value) {
   return text ? [text] : [];
 }
 
+function looksLikeProcessSummary(text) {
+  return /已(?:根据|整理)|报告内容|终稿报告|保留综合评分|不重新审稿|不调整评分|结构化字段|后端|渲染|模型过程|问题清单和结论参数/i.test(String(text || ""));
+}
+
+function compactCustomerLine(value, maxLength = 90) {
+  const text = customerFacingText(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const chars = Array.from(text);
+  if (chars.length <= maxLength) return text;
+  return `${chars.slice(0, maxLength).join("").replace(/[，,；;：:\s]+$/g, "")}…`;
+}
+
+function submissionMaterialSeverityRank(issue) {
+  const severity = normalizeSeverity(issue?.severity);
+  return { P0: 0, P1: 1, P2: 2, P3: 3 }[severity] ?? 2;
+}
+
+function isKeySubmissionMaterialIssue(issue) {
+  return issueLooksLikeSubmissionMaterial(issue) && ["P0", "P1", "P2"].includes(normalizeSeverity(issue.severity));
+}
+
+function cleanMaterialSummaryText(value) {
+  return customerFacingText(value || "")
+    .replace(/\.{3,}|…+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatSubmissionMaterialRiskLine(issue, index) {
+  const view = buildCustomerIssueView(issue, index);
+  const location = cleanMaterialSummaryText(view.location);
+  return [
+    `${view.severity}｜${cleanMaterialSummaryText(view.title)}`,
+    location && `定位：${location}`
+  ].filter(Boolean).join("｜");
+}
+
+function formatSubmissionMaterialActionLine(issue, index) {
+  const view = buildCustomerIssueView(issue, index);
+  const title = cleanMaterialSummaryText(view.title);
+  const location = cleanMaterialSummaryText(view.location);
+  const advice = cleanMaterialSummaryText(view.revisionAdvice);
+  const prefix = location && !/需人工复核/.test(location)
+    ? `针对“${title}”（${location}）`
+    : `针对“${title}”`;
+  return `${prefix}：${advice || "建议按目标期刊要求补齐对应材料并在投稿前逐项复核。"}。`
+    .replace(/。。+/g, "。");
+}
+
 function buildArtifactCompletionSummary(reportIssues, reportContent = {}) {
   const provided = reportContent.artifact_completion_summary && typeof reportContent.artifact_completion_summary === "object"
     ? reportContent.artifact_completion_summary
     : {};
-  const figureIssues = reportIssues.filter(issueLooksLikeFigureTableMaterial);
+  const sourceIssues = reportIssues
+    .filter(isKeySubmissionMaterialIssue)
+    .sort((left, right) => submissionMaterialSeverityRank(left) - submissionMaterialSeverityRank(right));
   const providedRisks = normalizeCustomerTextList(provided.key_risks);
   const providedActions = normalizeCustomerTextList(provided.recommended_actions);
-  const keyRisks = providedRisks.length
+  const useProvidedOverview = provided.overview && !looksLikeProcessSummary(provided.overview);
+  const useProvidedRisks = !sourceIssues.length && providedRisks.length && !providedRisks.every(looksLikeProcessSummary);
+  const useProvidedActions = !sourceIssues.length && providedActions.length && !providedActions.every(looksLikeProcessSummary);
+  const keyRisks = useProvidedRisks
     ? providedRisks
-    : figureIssues.slice(0, 6).map((issue) => `${issue.severity}｜${issue.issue}${issue.location ? `（${issue.location}）` : ""}`);
-  const recommendedActions = providedActions.length
+    : sourceIssues.slice(0, 5).map(formatSubmissionMaterialRiskLine);
+  const recommendedActions = useProvidedActions
     ? providedActions
-    : figureIssues.slice(0, 6).map((issue) => issue.recommendation).filter(Boolean);
-  const overview = String(provided.overview || "").trim()
-    || (figureIssues.length
-      ? `最终问题池中锁定 ${figureIssues.length} 项图表、表格、图注或材料呈现相关问题，建议在投稿前与正文和结果数据同步修订。`
-      : "最终问题池未锁定单独的图表或材料完成度问题，投稿前仍建议按目标期刊格式完成图号、表号、图注和表题的一轮核对。");
+    : sourceIssues.slice(0, 5).map(formatSubmissionMaterialActionLine).filter(Boolean);
+  const overview = (useProvidedOverview && !sourceIssues.length ? String(provided.overview || "").trim() : "")
+    || (sourceIssues.length
+      ? `最终问题池中锁定 ${sourceIssues.length} 项 P0-P2 投稿材料规范重点问题，主要涉及题首页、声明区、参考文献、报告规范清单、补充材料或图表编号闭合，建议在正式投稿前集中补齐。`
+      : "最终问题池未锁定 P0-P2 级投稿材料规范重点风险；P3 级格式细节可在完整问题清单中按需处理。");
   return {
     overview: customerFacingText(overview),
-    key_risks: keyRisks.slice(0, 8).map(customerFacingText),
-    recommended_actions: [...new Set(recommendedActions)].slice(0, 8).map(customerFacingText)
+    key_risks: keyRisks.slice(0, 5).map((item) => cleanMaterialSummaryText(item)).filter(Boolean),
+    recommended_actions: [...new Set(recommendedActions)].slice(0, 5).map((item) => cleanMaterialSummaryText(item)).filter(Boolean)
   };
+}
+
+function scoreBandLabelFromScore(score) {
+  const value = finiteNumber(score, null);
+  if (value === null) return "综合评估";
+  if (value < 60) return "暂不建议投稿";
+  if (value < 70) return "大修后可投稿";
+  if (value < 80) return "勉强达到可投稿水平";
+  return "投稿准备较成熟";
+}
+
+function buildRevisionDirection(data, priorityIssues = []) {
+  const content = data.reportContent || {};
+  const parts = [];
+  const recommendation = customerFacingText(content.submission_recommendation || "");
+  if (recommendation) parts.push(recommendation);
+  const workload = customerFacingText(content.revision_workload || content.revisionWorkload || "");
+  if (workload) parts.push(`修订工作量：${workload}`);
+  const weaknesses = normalizeStringArray(content.major_weaknesses)
+    .slice(0, 2)
+    .map((item) => item.replace(/[。；;，,.\s]+$/g, ""))
+    .filter(Boolean);
+  if (weaknesses.length) parts.push(`优先围绕${weaknesses.join("、")}处理。`);
+  if (!parts.length && priorityIssues.length) {
+    const themes = priorityIssues.slice(0, 3).map((issue) => customerFacingText(issue.issue || issue.title || "")).filter(Boolean);
+    if (themes.length) parts.push(`建议先处理：${themes.join("；")}。`);
+  }
+  return parts.join(" ") || data.minRevisionAdvice || "建议优先处理 P0/P1 必改项，再处理影响表达和完整性的 P2/P3 问题。";
 }
 
 function summarizeConsistencyMetrics(task) {
@@ -4909,18 +6433,8 @@ function normalizeModelScoreSummary(reportContent = {}) {
   const raw = reportContent.score_summary && typeof reportContent.score_summary === "object" && !Array.isArray(reportContent.score_summary)
     ? reportContent.score_summary
     : {};
-  const readScore = (value, options = {}) => {
-    const text = String(value ?? "").trim();
-    const tenPointMatch = text.match(/(\d+(?:\.\d+)?)\s*\/\s*10\b/i);
-    if (tenPointMatch) {
-      return Math.round(clampNumber(Number(tenPointMatch[1]) * 10, 0, 100));
-    }
-    const number = Number(value);
-    if (!Number.isFinite(number)) return null;
-    return Math.round(clampNumber(options.scale10 ? number * 10 : number, 0, 100));
-  };
-  const overallScore = readScore(raw.overall_score ?? raw.overallScore ?? reportContent.overall_score ?? reportContent.overallScore)
-    ?? readScore(raw.overall_score_10 ?? raw.overallScore10 ?? raw.overall_score_text ?? reportContent.overall_score_10 ?? reportContent.overallScore10, { scale10: true });
+  const overallScore = parseScoreValue(raw.overall_score ?? raw.overallScore ?? reportContent.overall_score ?? reportContent.overallScore)
+    ?? parseScoreValue(raw.overall_score_10 ?? raw.overallScore10 ?? raw.overall_score_text ?? reportContent.overall_score_10 ?? reportContent.overallScore10, { scale10: true });
   const rawDimensions = Array.isArray(raw.dimension_scores)
     ? raw.dimension_scores
     : Array.isArray(raw.dimensionScores)
@@ -4928,18 +6442,13 @@ function normalizeModelScoreSummary(reportContent = {}) {
       : Array.isArray(reportContent.dimension_scores)
         ? reportContent.dimension_scores
         : [];
-  const dimensionScores = PDF_DIMENSIONS.map((dimension) => {
-    const found = rawDimensions.find((item) => {
-      if (!item || typeof item !== "object") return false;
-      const key = String(item.key || item.stage || item.category || "").trim();
-      const title = String(item.title || item.dimension || item.primary_dimension || "").trim();
-      return key === dimension.key || key === dimension.stage || title === dimension.title;
-    }) || {};
+  const dimensionScores = SCORE_DIMENSIONS.map((dimension) => {
+    const found = findScoreDimensionEntry(rawDimensions, dimension);
     return {
       key: dimension.key,
       title: String(found.title || found.dimension || found.primary_dimension || dimension.title).trim(),
-      score: readScore(found.score ?? found.value)
-        ?? readScore(found.score_10 ?? found.score10 ?? found.score_text ?? found.scoreText, { scale10: true }),
+      score: parseScoreValue(found.score ?? found.value)
+        ?? parseScoreValue(found.score_10 ?? found.score10 ?? found.score_text ?? found.scoreText, { scale10: true }),
       rationale: customerFacingText(found.rationale || found.reason || found.comment || "")
     };
   });
@@ -4960,8 +6469,9 @@ function normalizeDimensionDiagnosis(reportContent = {}, adjudicatorJson = {}) {
       ? adjudicatorJson.dimension_diagnosis
       : {};
   const normalized = {};
-  for (const dimension of PDF_DIMENSIONS) {
-    const value = source[dimension.key] || source[dimension.stage] || source[dimension.title] || "";
+  for (const dimension of SCORE_DIMENSIONS) {
+    const aliases = scoreDimensionAliases(dimension);
+    const value = aliases.map((alias) => source[alias]).find(Boolean) || source[dimension.key] || source[dimension.title] || "";
     normalized[dimension.key] = customerFacingText(toPlainReportText(value));
   }
   return normalized;
@@ -4989,18 +6499,20 @@ function deriveRiskLevel(severityCounts, overallScore) {
   return "低风险";
 }
 
-function buildV22ReportData(task) {
-  const finalJson = task.finalJson || {};
+function isV4TxtSourceTask(task) {
+  return Boolean(task?.v4ParsedIssueList && task?.v4ParsedAdjudicatorParameters)
+    || String(task?.reportVersion || "").includes("v4-txt-source-only")
+    || String(task?.pdfReportVersion || "").includes("v4-txt-source-only");
+}
+
+function buildV4ReportData(task) {
+  const issueListJson = task.v4ParsedIssueList || normalizeV4IssueListFromText(task.issueListText || "");
+  const conclusionParametersJson = task.v4ParsedAdjudicatorParameters
+    || normalizeV4AdjudicatorParametersFromText(task.adjudicatorParametersText || task.conclusionParametersText || "", issueListJson);
+  const finalJson = buildV4FinalJsonFromTextSources(issueListJson, conclusionParametersJson);
+  const reportIssues = issueListJson.issues || [];
   const reportContent = finalJson.report_content || {};
-  const adjudicatorJson = getAdjudicatorJson(task) || {};
-  const finalContentIssues = collectFinalContentIssues(task);
-  const fallbackIssues = collectFallbackFinalIssues(task);
-  const reportIssues = finalContentIssues.length ? finalContentIssues : fallbackIssues;
-  const lockedMustFix = reportIssues.filter((issue) => ["P0", "P1"].includes(issue.severity));
-  const priorityIssues = collectPriorityIssues(task, reportIssues);
-  const artifactSummary = summarizeArtifactQuality(reportContent.artifact_quality_summary || adjudicatorJson.artifact_quality_summary || task.artifactManifest);
-  const artifactCompletionSummary = buildArtifactCompletionSummary(reportIssues, reportContent);
-  const consistencyMetrics = summarizeConsistencyMetrics(task);
+  const priorityIssues = collectStrictSourcePriorityIssues(conclusionParametersJson.priority_issue_ids || [], reportIssues);
   const severityCounts = normalizeCountMap(countSeverities(reportIssues), ["P0", "P1", "P2", "P3"]);
   const issueDistributionRaw = countIssuesByDimension(reportIssues);
   const issueDistribution = {};
@@ -5008,6 +6520,118 @@ function buildV22ReportData(task) {
     issueDistribution[dimension.key] = Math.max(0, Math.round(finiteNumber(issueDistributionRaw[dimension.key] ?? issueDistributionRaw[dimension.title], 0)));
   }
   const scoreSummary = normalizeModelScoreSummary(reportContent);
+  const dimensionDiagnosis = normalizeDimensionDiagnosis(reportContent, conclusionParametersJson);
+  const moduleScores = scoreSummary.dimensionScores.map((item) => ({
+    ...item,
+    diagnosis: dimensionDiagnosis[item.key] || ""
+  }));
+  return {
+    title: REPORT_TITLE,
+    version: "V4 TXT 保真客户版 PDF",
+    generatedAt: nowIso(),
+    task,
+    finalJson,
+    reportContent,
+    reportIssues,
+    lockedMustFix: reportIssues.filter((issue) => ["P0", "P1"].includes(normalizeSeverity(issue.severity))),
+    priorityIssues,
+    severityCounts,
+    issueDistribution,
+    artifactSummary: {},
+    artifactCompletionSummary: null,
+    consistencyMetrics: {},
+    scoreSummary,
+    pdfTextSet: {},
+    moduleScores,
+    dimensionDiagnosis,
+    checklist: conclusionParametersJson.pre_submission_checklist || [],
+    overallScore: scoreSummary.overallScore,
+    riskLevel: conclusionParametersJson.risk_level,
+    minRevisionAdvice: conclusionParametersJson.min_revision_advice || conclusionParametersJson.submission_recommendation || "",
+    englishTitle: conclusionParametersJson.english_title || "",
+    chineseTitle: conclusionParametersJson.chinese_title || "",
+    oneLineVerdict: conclusionParametersJson.one_line_verdict || "",
+    riskReason: conclusionParametersJson.risk_reason || conclusionParametersJson.tier_justification || "",
+    keyBarriers: conclusionParametersJson.key_barriers || "",
+    publicationPositioning: conclusionParametersJson.publication_positioning || "",
+    targetScore: conclusionParametersJson.target_score || "",
+    tierJustification: conclusionParametersJson.tier_justification || "",
+    submissionRecommendation: conclusionParametersJson.submission_recommendation || conclusionParametersJson.min_revision_advice || "",
+    revisionWorkload: conclusionParametersJson.revision_workload || ""
+  };
+}
+
+function buildV22ReportData(task) {
+  if (isV4TxtSourceTask(task)) return buildV4ReportData(task);
+  const isTwoFileV3Task = Boolean(task.issueListJson && task.conclusionParametersJson);
+  const sourceConclusion = isTwoFileV3Task ? buildStrictPdfSourceConclusion(task) : null;
+  const finalJson = task.issueListJson && task.conclusionParametersJson
+    ? materializeV3ReportJsonFromFiles(
+      task.issueListJson,
+      task.conclusionParametersJson,
+      task.issueListText || "",
+      task.conclusionParametersText || "",
+      task.finalJson || {},
+      task.artifactManifest
+    )
+    : task.finalJson || {};
+  const effectiveTask = { ...task, finalJson };
+  const materializedReportContent = finalJson.report_content || {};
+  const sourceReportContent = isTwoFileV3Task
+    ? {
+        ...materializedReportContent,
+        submission_recommendation: sourceConclusion.submission_recommendation || "",
+        risk_level: sourceConclusion.risk_level || "",
+        revision_workload: sourceConclusion.revision_workload || "",
+        dimension_diagnosis: sourceConclusion.dimension_diagnosis || {},
+        manuscript_strengths: sourceConclusion.manuscript_strengths || [],
+        major_weaknesses: sourceConclusion.major_weaknesses || [],
+        english_title: sourceConclusion.english_title || "",
+        chinese_title: sourceConclusion.chinese_title || "",
+        one_line_verdict: sourceConclusion.one_line_verdict || "",
+        risk_reason: sourceConclusion.risk_reason || "",
+        key_barriers: sourceConclusion.key_barriers || "",
+        publication_positioning: sourceConclusion.publication_positioning || "",
+        target_score: sourceConclusion.target_score || "",
+        tier_justification: sourceConclusion.tier_justification || "",
+        min_revision_advice: sourceConclusion.min_revision_advice || "",
+        priority_issue_ids: sourceConclusion.priority_issue_ids || [],
+        pre_submission_checklist: sourceConclusion.pre_submission_checklist || [],
+        artifact_completion_summary: sourceConclusion.artifact_completion_summary || null,
+        pdf_text_set: normalizePdfTextSet(sourceConclusion.pdf_text_set || {}),
+        score_summary: scoreSummaryFromConclusionParameters(sourceConclusion),
+        final_issue_list: materializedReportContent.final_issue_list || [],
+        priority_actions: materializedReportContent.priority_actions || []
+      }
+    : materializedReportContent;
+  const reportContent = sourceReportContent;
+  const adjudicatorJson = getAdjudicatorJson(task) || {};
+  const finalContentIssues = collectFinalContentIssues(effectiveTask);
+  const fallbackIssues = collectFallbackFinalIssues(effectiveTask);
+  const reportIssues = finalContentIssues.length ? finalContentIssues : fallbackIssues;
+  const lockedMustFix = reportIssues.filter((issue) => ["P0", "P1"].includes(issue.severity));
+  const priorityIssues = isTwoFileV3Task
+    ? collectStrictSourcePriorityIssues(sourceConclusion.priority_issue_ids, reportIssues)
+    : collectPriorityIssues(task, reportIssues);
+  const artifactSummary = summarizeArtifactQuality(reportContent.artifact_quality_summary || adjudicatorJson.artifact_quality_summary || task.artifactManifest);
+  const artifactCompletionSummary = isTwoFileV3Task
+    ? (reportContent.artifact_completion_summary || null)
+    : buildArtifactCompletionSummary(reportIssues, reportContent);
+  const consistencyMetrics = summarizeConsistencyMetrics(task);
+  const severityCounts = normalizeCountMap(countSeverities(reportIssues), ["P0", "P1", "P2", "P3"]);
+  const issueDistributionRaw = countIssuesByDimension(reportIssues);
+  const issueDistribution = {};
+  for (const dimension of PDF_DIMENSIONS) {
+    issueDistribution[dimension.key] = Math.max(0, Math.round(finiteNumber(issueDistributionRaw[dimension.key] ?? issueDistributionRaw[dimension.title], 0)));
+  }
+  const scoreContent = hasUsableScoreSummary(reportContent.score_summary)
+    ? reportContent
+    : {
+        ...reportContent,
+        score_summary: isTwoFileV3Task ? scoreSummaryFromConclusionParameters(sourceConclusion) : scoreSummaryFromConclusionParameters(task.conclusionParametersJson || adjudicatorJson || {})
+      };
+  const scoreSummary = normalizeModelScoreSummary(scoreContent);
+  const pdfTextSet = normalizePdfTextSet(reportContent.pdf_text_set || reportContent.pdfTextSet);
   const dimensionDiagnosis = normalizeDimensionDiagnosis(reportContent, adjudicatorJson);
   const moduleScores = scoreSummary.dimensionScores.map((item) => ({
     ...item,
@@ -5015,10 +6639,16 @@ function buildV22ReportData(task) {
   }));
   return {
     title: REPORT_TITLE,
-    version: "V2.2 客户版 PDF",
+    version: "V3 客户版 PDF",
     generatedAt: nowIso(),
     task,
-    finalJson,
+    finalJson: isTwoFileV3Task
+      ? {
+          ...finalJson,
+          summary: customerFacingText(sourceConclusion.summary || ""),
+          overall_conclusion: customerFacingText(sourceConclusion.overall_conclusion || "")
+        }
+      : finalJson,
     reportContent,
     reportIssues,
     lockedMustFix,
@@ -5029,12 +6659,25 @@ function buildV22ReportData(task) {
     artifactCompletionSummary,
     consistencyMetrics,
     scoreSummary,
+    pdfTextSet,
     moduleScores,
     dimensionDiagnosis,
-    checklist: collectPdfChecklist(finalJson, reportContent),
+    checklist: isTwoFileV3Task
+      ? normalizeCustomerTextList(reportContent.checklist || reportContent.pre_submission_checklist || reportContent.submission_checklist)
+      : collectPdfChecklist(finalJson, reportContent),
     overallScore: scoreSummary.overallScore,
-    riskLevel: reportContent.risk_level || adjudicatorJson.overall_judgment?.risk_level || deriveRiskLevel(severityCounts, scoreSummary.overallScore ?? 0),
-    minRevisionAdvice: reportContent.min_revision_advice || finalJson.overall_conclusion || "建议优先处理 P0/P1 必改项，再处理影响表达和完整性的 P2 问题。",
+    riskLevel: reportContent.risk_level || (!isTwoFileV3Task ? adjudicatorJson.overall_judgment?.risk_level || deriveRiskLevel(severityCounts, scoreSummary.overallScore ?? 0) : ""),
+    minRevisionAdvice: reportContent.min_revision_advice || (!isTwoFileV3Task ? finalJson.overall_conclusion || "建议优先处理 P0/P1 必改项，再处理影响表达和完整性的 P2 问题。" : ""),
+    englishTitle: reportContent.english_title || "",
+    chineseTitle: reportContent.chinese_title || "",
+    oneLineVerdict: reportContent.one_line_verdict || "",
+    riskReason: reportContent.risk_reason || "",
+    keyBarriers: reportContent.key_barriers || "",
+    publicationPositioning: reportContent.publication_positioning || "",
+    targetScore: reportContent.target_score || "",
+    tierJustification: reportContent.tier_justification || "",
+    submissionRecommendation: reportContent.submission_recommendation || "",
+    revisionWorkload: reportContent.revision_workload || "",
   };
 }
 
@@ -5061,25 +6704,36 @@ function svgMultilineText(value, x, y, options = {}) {
 function shortDimensionTitle(item) {
   const key = item?.key || item?.stage || "";
   const map = {
-    selection_innovation: "选题\n创新",
-    clinical_methods: "临床\n逻辑",
-    statistical_results: "统计\n证据",
-    numerical_audit: "数据\n一致",
+    topic_value: "选题\n价值",
+    study_design: "研究\n设计",
+    statistical_analysis: "统计\n分析",
+    data_credibility: "数据\n可信",
+    figure_presentation: "图表\n呈现",
+    writing_expression: "写作\n表达",
+    topic_innovation_rationale: "选题\n合理",
+    statistical_details: "统计\n细节",
+    fulltext_consistency_numerical_audit: "全文\n审计",
+    figure_table_quality: "图表\n呈现",
+    misc_compliance_expression: "合规\n表达",
+    selection_innovation: "选题\n合理",
+    clinical_methods: "选题\n合理",
+    statistical_results: "统计\n细节",
+    numerical_audit: "全文\n审计",
     figure_table_visual_audit: "图表\n呈现",
-    submission_safety_expression: "投稿\n合规"
+    submission_safety_expression: "合规\n表达"
   };
   return map[key] || String(item?.title || "").replace("与", "\n");
 }
 
 function renderRadarSvg(moduleScores) {
   if (!Array.isArray(moduleScores) || moduleScores.some((item) => item.score === null || item.score === undefined)) {
-    return `<div class="note">未生成六维评分。</div>`;
+    return `<div class="note">未生成完整维度评分。</div>`;
   }
-  const width = 520;
-  const height = 390;
-  const centerX = 260;
-  const centerY = 194;
-  const radius = 122;
+  const width = 640;
+  const height = 460;
+  const centerX = 320;
+  const centerY = 228;
+  const radius = 150;
   const angleFor = (index) => -Math.PI / 2 + (Math.PI * 2 * index) / moduleScores.length;
   const point = (score, index) => {
     const scale = clampNumber(score, 0, 100) / 100;
@@ -5103,7 +6757,7 @@ function renderRadarSvg(moduleScores) {
         ${svgText(item.score, scoreX.toFixed(1), scoreY.toFixed(1), { size: 11, weight: 800, fill: "#1f5cc8" })}`;
     })
     .join("");
-  return `<svg class="chart-svg radar-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="六维评分雷达图">
+  return `<svg class="chart-svg radar-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${htmlEscape(moduleScores.length)}维评分雷达图">
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfdff" rx="18" />
     ${rings}
     ${axes}
@@ -5232,14 +6886,44 @@ function renderDataAnalyticsHorizontalBarChartSvg(items, options = {}) {
   return `<svg class="da-svg" viewBox="0 0 ${width} ${svgHeight}" role="img" aria-label="${htmlEscape(options.label || "横向柱状图")}">${gridLines}${bars}</svg>`;
 }
 
-function renderIssueCard(issue, index) {
-  const view = buildCustomerIssueView(issue, index);
+function severityOwnershipRows(reportIssues) {
+  return ["P0", "P1", "P2", "P3"].map((severity) => {
+    const issues = reportIssues.filter((issue) => normalizeSeverity(issue.severity) === severity);
+    const counts = {};
+    for (const issue of issues) {
+      const dimension = dimensionForCategory(issue.category, issue.primary_dimension || issue.dimensionTitle || issue.dimension || "");
+      counts[dimension.title] = (counts[dimension.title] || 0) + 1;
+    }
+    const ownership = Object.entries(counts)
+      .sort((left, right) => right[1] - left[1])
+      .map(([title, count]) => `${title} ${count}项`)
+      .join("；");
+    return { severity, count: issues.length, ownership: ownership || "无" };
+  });
+}
+
+function conclusionListFromText(value, maxItems = 5) {
+  if (Array.isArray(value)) return value.map((item) => customerFacingText(toPlainReportText(item))).filter(Boolean).slice(0, maxItems);
+  return String(value || "")
+    .split(/[；;\n]+/)
+    .map((item) => customerFacingText(item))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function dimensionCountLabel(count) {
+  const labels = { 1: "一维", 2: "二维", 3: "三维", 4: "四维", 5: "五维", 6: "六维", 7: "七维", 8: "八维", 9: "九维" };
+  return labels[count] || `${count}维`;
+}
+
+function renderIssueCard(issue, index, options = {}) {
+  const view = buildCustomerIssueView(issue, index, options);
   return `<article class="issue-card severity-${htmlEscape(view.severity)}">
     <div class="issue-head">
       <span class="severity-badge">${htmlEscape(view.severity)}</span>
       <div>
         <strong>${index + 1}. ${htmlEscape(view.title)}</strong>
-        <div class="issue-dimension">${htmlEscape(view.dimensionTitle)}</div>
+        <div class="issue-dimension">${htmlEscape([view.id, view.dimensionTitle].filter(Boolean).join(" · "))}</div>
       </div>
     </div>
     <div class="issue-field"><span>精确定位</span><p>${htmlEscape(view.location)}</p></div>
@@ -5249,13 +6933,95 @@ function renderIssueCard(issue, index) {
   </article>`;
 }
 
+function renderPriorityIndexRows(priorityIssues) {
+  return priorityIssues
+    .map((issue, index) => {
+      const view = buildCustomerIssueView(issue, index, { strictSource: true });
+      return `<tr>
+        <td class="index-no">${index + 1}</td>
+        <td>${htmlEscape(view.id || "-")}</td>
+        <td><span class="severity-chip severity-${htmlEscape(view.severity)}">${htmlEscape(view.severity)}</span></td>
+        <td>${htmlEscape(view.dimensionTitle)}</td>
+        <td>${htmlEscape(truncateChars(view.title, 52))}</td>
+        <td>${htmlEscape(truncateChars(view.location, 86))}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function renderFullIssueIndexRows(issues, offset = 0) {
+  return issues
+    .map((issue, index) => {
+      const view = buildCustomerIssueView(issue, offset + index, { strictSource: true });
+      return `<tr>
+        <td class="index-no">${offset + index + 1}</td>
+        <td>${htmlEscape(view.id || "-")}</td>
+        <td><span class="severity-chip severity-${htmlEscape(view.severity)}">${htmlEscape(view.severity)}</span></td>
+        <td>${htmlEscape(truncateChars(view.dimensionTitle, 14))}</td>
+        <td>${htmlEscape(truncateChars(view.title, 72))}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function chunkArray(values, size) {
+  const result = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
+}
+
+function publicationPositioningText(data) {
+  const direct = customerFacingText(data.publicationPositioning || "");
+  if (direct && !/未提供/.test(direct)) return direct;
+  const sources = [
+    data.finalJson?.overall_conclusion,
+    data.finalJson?.summary,
+    data.pdfTextSet?.closing_note,
+    data.submissionRecommendation,
+    data.reportContent?.conclusion_parameters_text
+  ].map(customerFacingText).filter(Boolean);
+  const joined = sources.join("。");
+  const sentence = joined
+    .split(/[。；;\n]+/)
+    .map((item) => item.trim())
+    .find((item) => /完成|修订|大修|修后/.test(item) && /投稿|期刊|SCI|分/.test(item));
+  return sentence || "裁决者文档未提供明确的修后投稿定位。";
+}
+
+function revisionFocusItems(data, priorityIssues) {
+  const items = [];
+  const push = (value) => {
+    const text = customerFacingText(value || "").replace(/\s+/g, " ").trim();
+    if (!text || items.some((item) => item === text)) return;
+    items.push(text);
+  };
+  for (const item of conclusionListFromText(data.submissionRecommendation, 4)) push(item);
+  for (const item of normalizeStringArray(data.reportContent?.major_weaknesses).slice(0, 3)) push(`优先补强：${item}`);
+  for (const issue of priorityIssues.slice(0, 4)) {
+    const view = buildCustomerIssueView(issue, 0);
+    push(`${view.title}：${truncateChars(view.revisionAdvice, 88)}`);
+  }
+  if (!items.length) push(buildRevisionDirection(data, priorityIssues));
+  return items.slice(0, 6);
+}
+
+function strictRevisionFocusItems(data) {
+  const items = [];
+  const push = (value) => {
+    const text = customerFacingText(value || "").replace(/\s+/g, " ").trim();
+    if (text && !items.includes(text)) items.push(text);
+  };
+  for (const item of conclusionListFromText(data.submissionRecommendation, 6)) push(item);
+  push(data.minRevisionAdvice);
+  return items.slice(0, 6);
+}
+
 function renderScoreTableRows(moduleScores) {
   return moduleScores
     .map((item) => `<tr>
       <td>${htmlEscape(item.title)}</td>
       <td class="score-cell">${item.score === null || item.score === undefined ? "未生成" : item.score}</td>
-      <td>${htmlEscape(item.rationale || "未生成评分理由。")}</td>
-      <td class="diagnosis-cell">${htmlEscape(item.diagnosis || "未生成六维诊断。")}</td>
+      <td>${htmlEscape(truncateChars(item.rationale || item.diagnosis || "未提供", 72))}</td>
     </tr>`)
     .join("");
 }
@@ -5272,19 +7038,38 @@ function renderPdfReportHtml(task, data) {
     value: data.issueDistribution[dimension.key] || 0,
     color: PDF_DA_DIMENSION_COLORS[index % PDF_DA_DIMENSION_COLORS.length]
   }));
-  const analyticsScoreItems = data.moduleScores.map((item, index) => ({
-    label: item.title,
-    value: item.score === null || item.score === undefined ? 0 : item.score,
-    color: PDF_DA_DIMENSION_COLORS[index % PDF_DA_DIMENSION_COLORS.length]
-  }));
+  const scoreDimensionCount = Math.max(0, data.moduleScores.length);
+  const scoreDimensionLabel = scoreDimensionCount ? `${dimensionCountLabel(scoreDimensionCount)}评分` : "维度评分";
+  const radarTitle = scoreDimensionCount ? `${dimensionCountLabel(scoreDimensionCount)}雷达` : "维度雷达";
+  const severityOwnership = severityOwnershipRows(data.reportIssues || []);
   const priorityIssues = data.priorityIssues.slice(0, 10);
-  const fullIssues = data.reportIssues;
-  const artifactCompletion = data.artifactCompletionSummary || { overview: "", key_risks: [], recommended_actions: [] };
   const reportDate = String(data.generatedAt || "").slice(0, 10) || "-";
   const totalIssues = ["P0", "P1", "P2", "P3"].reduce((sum, key) => sum + (data.severityCounts[key] || 0), 0);
   const scoreDisplay = data.scoreSummary.hasOverallScore ? data.overallScore : "未生成";
-  const scoreLabel = data.scoreSummary.overallScoreLabel || "综合评估";
-  const scoreRationale = data.scoreSummary.overallScoreRationale || "当前报告未包含综合评分。";
+  const scoreLabel = data.scoreSummary.overallScoreLabel || "未提供";
+  const pdfTextSet = data.pdfTextSet || {};
+  const scoreRationale = pdfTextSet.score_interpretation || data.scoreSummary.overallScoreRationale || "";
+  const coverSubtitle = pdfTextSet.cover_subtitle || "";
+  const overviewLead = pdfTextSet.overview_lead || "";
+  const priorityLead = pdfTextSet.priority_issues_intro || "";
+  const revisionDirection = data.submissionRecommendation || data.minRevisionAdvice || "";
+  const englishTitle = data.englishTitle || "";
+  const chineseTitle = data.chineseTitle || "";
+  const priorityIssueIds = priorityIssues.map((issue) => issue.id).filter(Boolean).join("、") || "未提供";
+  const publicationPositioning = data.publicationPositioning || "未提供";
+  const targetScore = data.targetScore || "未提供";
+  const page05Risks = conclusionListFromText(data.keyBarriers, 5);
+  if (!page05Risks.length) page05Risks.push(...normalizeStringArray(data.reportContent.major_weaknesses).slice(0, 5));
+  const page05Actions = conclusionListFromText(data.submissionRecommendation, 3);
+  if (!page05Actions.length) page05Actions.push(revisionDirection);
+  const revisionFocus = strictRevisionFocusItems(data);
+  const detailStartNumber = 6;
+  const detailPageCount = Math.max(1, priorityIssues.length);
+  const issueIndexStartNumber = detailStartNumber + detailPageCount;
+  const issueIndexChunks = chunkArray(data.reportIssues || [], 24);
+  const issueIndexPageCount = Math.max(1, issueIndexChunks.length);
+  const checklistItems = normalizeCustomerTextList(data.checklist || []);
+  const checklistPageNumber = String(issueIndexStartNumber + issueIndexPageCount).padStart(2, "0");
   const pageFrame = (number, title, subtitle, body, options = {}) => `<section class="page ${options.className || ""}">
     <header class="page-header">
       <div>
@@ -5300,27 +7085,52 @@ function renderPdfReportHtml(task, data) {
       <span>${htmlEscape(reportDate)} · ${htmlEscape(task.id)}</span>
     </footer>
   </section>`;
+  const checklistPage = checklistItems.length
+    ? pageFrame(checklistPageNumber, "投稿前检查清单", "",
+      `<ul>${checklistItems.map((item) => `<li>${htmlEscape(customerFacingText(toPlainReportText(item)))}</li>`).join("")}</ul>`)
+    : "";
   const dataAnalyticsPage = `<section class="page da-page">
     <header class="page-header">
-      <div><div class="page-kicker">DATA ANALYTICS ADDENDUM</div><h2>终稿输出可视化分析</h2></div>
+      <div><div class="page-kicker">ISSUE POOL ANALYTICS</div><h2>问题池结构分析</h2></div>
       <div class="risk">03</div>
     </header>
     <main class="page-body">
       <div class="da-kpi-grid">
         <div class="da-kpi"><div class="da-kpi-label">模型综合评分</div><div class="da-kpi-value blue">${htmlEscape(scoreDisplay)}<span style="font-size:13px;color:#7a8799;"> 分</span></div><div class="da-kpi-note">${htmlEscape(scoreLabel)}</div></div>
-        <div class="da-kpi"><div class="da-kpi-label">最终问题池</div><div class="da-kpi-value">${totalIssues}</div><div class="da-kpi-note">终稿 final_issue_list</div></div>
+        <div class="da-kpi"><div class="da-kpi-label">最终问题池</div><div class="da-kpi-value">${totalIssues}</div><div class="da-kpi-note">最终锁定问题</div></div>
         <div class="da-kpi"><div class="da-kpi-label">P0 / P1</div><div class="da-kpi-value">${data.severityCounts.P0 || 0} / ${data.severityCounts.P1 || 0}</div><div class="da-kpi-note">需优先处理</div></div>
         <div class="da-kpi"><div class="da-kpi-label">风险状态</div><div class="da-kpi-value">${htmlEscape(data.riskLevel)}</div><div class="da-kpi-note">${htmlEscape(data.reportContent.revision_workload || data.reportContent.revisionWorkload || "")}</div></div>
       </div>
-      <div class="da-panel full"><h3>分析结论</h3><p class="da-insight">${htmlEscape(scoreRationale || data.finalJson.overall_conclusion || "本页基于终稿结构化字段生成，用于直观看到最终评分、问题严重程度和六维问题压力分布。")}</p></div>
+      <div class="da-panel full"><h3>分析结论</h3><p class="da-insight">${htmlEscape(scoreRationale || data.finalJson.overall_conclusion || "未提供")}</p></div>
       <div class="da-analysis-grid">
         <div class="da-panel"><h3>问题严重程度分布</h3>${renderDataAnalyticsVerticalBarChartSvg(analyticsSeverityItems, { label: "问题严重程度分布" })}</div>
-        <div class="da-panel"><h3>六维问题数量分布</h3>${renderDataAnalyticsHorizontalBarChartSvg(analyticsDistributionItems, { label: "六维问题数量分布", maxValue: Math.max(1, ...analyticsDistributionItems.map((item) => finiteNumber(item.value, 0))) })}</div>
-        <div class="da-panel full"><h3>六维模型评分</h3>${renderDataAnalyticsHorizontalBarChartSvg(analyticsScoreItems, { label: "六维模型评分", maxValue: 100, valueSuffix: " 分" })}</div>
+        <div class="da-panel"><h3>五类问题数量分布</h3>${renderDataAnalyticsHorizontalBarChartSvg(analyticsDistributionItems, { label: "五类问题数量分布", maxValue: Math.max(1, ...analyticsDistributionItems.map((item) => finiteNumber(item.value, 0))) })}</div>
+        <div class="da-panel full"><h3>P 分级问题归属</h3>
+          <table class="ownership-table"><thead><tr><th>P 分级</th><th>数量</th><th>主要归属</th></tr></thead><tbody>
+          ${severityOwnership.map((row) => `<tr><td>${htmlEscape(row.severity)}</td><td>${row.count}</td><td>${htmlEscape(row.ownership)}</td></tr>`).join("")}
+          </tbody></table>
+        </div>
       </div>
     </main>
-    <footer class="page-footer"><span>Data Analytics 专项可视化</span><span>${htmlEscape(reportDate)} · ${htmlEscape(task.id)}</span></footer>
+    <footer class="page-footer"><span>问题池结构分析</span><span>${htmlEscape(reportDate)} · ${htmlEscape(task.id)}</span></footer>
   </section>`;
+  const priorityDetailPages = priorityIssues.length
+    ? priorityIssues.map((issue, index) => pageFrame(
+      String(index + detailStartNumber).padStart(2, "0"),
+      `优先处理问题详情 · ${index + 1}/${priorityIssues.length}`,
+      "",
+      renderIssueCard(issue, index, { strictSource: true }),
+      { className: "priority-detail-page" }
+    )).join("")
+    : pageFrame(String(detailStartNumber).padStart(2, "0"), "优先处理问题详情", "", `<div class="note">未锁定需要优先处理的问题。</div>`);
+  const issueIndexPages = issueIndexChunks.length
+    ? issueIndexChunks.map((chunk, chunkIndex) => pageFrame(
+      String(issueIndexStartNumber + chunkIndex).padStart(2, "0"),
+      `完整问题清单索引 · ${chunkIndex + 1}/${issueIndexChunks.length}`,
+      "",
+      `<table class="full-issue-index"><thead><tr><th>#</th><th>编号</th><th>级别</th><th>归属</th><th>问题名称</th></tr></thead><tbody>${renderFullIssueIndexRows(chunk, chunkIndex * 24)}</tbody></table>`
+    )).join("")
+    : pageFrame(String(issueIndexStartNumber).padStart(2, "0"), "完整问题清单索引", "", `<div class="note">暂无结构化问题索引。</div>`);
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -5350,6 +7160,10 @@ function renderPdfReportHtml(task, data) {
     .cover-kicker { color: #1f5cc8; font-weight: 800; letter-spacing: 0.12em; font-size: 12px; text-transform: uppercase; }
     .cover-title { color: #2155c8; font-size: 34px; line-height: 1.16; font-weight: 900; letter-spacing: 0; margin: 9mm 0 8mm; }
     .cover-rule { width: 126mm; height: 1.3mm; background: #2155c8; border-radius: 99px; margin-bottom: 11mm; }
+    .title-stack { display: grid; gap: 6px; margin: 10mm 0 4mm; max-width: 170mm; }
+    .title-item { border-left: 3px solid #2155c8; padding: 5px 0 5px 10px; background: rgba(251,253,255,0.72); }
+    .title-item .summary-label { color: #1f5cc8; }
+    .title-item .summary-value { font-size: 12.2px; line-height: 1.45; font-weight: 760; }
     .cover-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 160mm; margin-top: 18mm; }
     .cover-summary .summary-item { border-top: 1px solid #c9d8ec; padding-top: 8px; }
     .summary-label { color: #6b7b92; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -5381,9 +7195,22 @@ function renderPdfReportHtml(task, data) {
     .metric-p1 .value { color: #dc2626; }
     .metric-p2 .value { color: #d97706; }
     .metric-p3 .value { color: #64748b; }
+    .severity-legend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: -3px 0 12px; color: #516277; font-size: 10.3px; }
+    .severity-legend span { display: flex; align-items: center; gap: 5px; border: 1px solid #d7e3f1; border-radius: 999px; background: rgba(251,253,255,0.88); padding: 4px 8px; }
+    .severity-legend strong { font-weight: 900; }
+    .severity-legend .p0 { color: #b91c1c; }
+    .severity-legend .p1 { color: #dc2626; }
+    .severity-legend .p2 { color: #d97706; }
+    .severity-legend .p3 { color: #64748b; }
     .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
     .chart-card { padding: 11px; }
     .chart-svg { width: 100%; border: 1px solid #d7e3f1; border-radius: 14px; background: #fbfdff; }
+    .radar-layout { display: grid; grid-template-columns: 1fr 48mm; gap: 12px; align-items: stretch; margin-bottom: 12px; }
+    .radar-card { padding: 9px; }
+    .radar-card .radar-svg { min-height: 128mm; }
+    .score-panel-compact { padding: 12px 10px; }
+    .score-panel-compact .score-number { font-size: 44px; }
+    .score-panel-compact .subtle { font-size: 10.8px; line-height: 1.5; text-align: left; }
     .da-page .page-body { display: flex; flex-direction: column; gap: 12px; }
     .da-page h2 { color: #17345b; font-size: 22px; line-height: 1.2; font-weight: 900; margin: 2px 0 0; }
     .da-kpi-grid { display: grid; grid-template-columns: 1.1fr 1fr 1fr 1fr; gap: 10px; }
@@ -5405,6 +7232,8 @@ function renderPdfReportHtml(task, data) {
     th { background: #eef5ff; color: #17345b; text-align: left; font-size: 11px; font-weight: 850; }
     .score-cell { font-weight: 900; color: #2155c8; text-align: center; font-size: 20px; width: 18mm; }
     .diagnosis-cell { color: #334155; }
+    .score-table-compact td:nth-child(1) { width: 40mm; font-weight: 800; color: #17345b; }
+    .score-table-compact td:nth-child(3) { color: #334155; }
     .issue-card { background: #ffffff; border: 1px solid #d7e3f1; border-left: 5px solid #64748b; border-radius: 12px; padding: 10px 12px; margin: 9px 0; page-break-inside: avoid; box-shadow: 0 4px 12px rgba(19,32,51,0.04); }
     .severity-P0 { border-left-color: #b91c1c; }
     .severity-P1 { border-left-color: #dc2626; }
@@ -5421,6 +7250,22 @@ function renderPdfReportHtml(task, data) {
     .issue-field { display: grid; grid-template-columns: 25mm 1fr; gap: 8px; border-top: 1px solid #edf2f8; padding-top: 6px; margin-top: 6px; }
     .issue-field span { color: #65758b; font-size: 10.5px; font-weight: 850; }
     .issue-field p { margin: 0; color: #26364a; }
+    .priority-index td { font-size: 10.5px; line-height: 1.45; }
+    .priority-index th:nth-child(1), .priority-index td:nth-child(1) { width: 10mm; text-align: center; }
+    .priority-index th:nth-child(2), .priority-index td:nth-child(2) { width: 18mm; }
+    .priority-index th:nth-child(3), .priority-index td:nth-child(3) { width: 15mm; text-align: center; }
+    .priority-index th:nth-child(4), .priority-index td:nth-child(4) { width: 28mm; }
+    .full-issue-index td { font-size: 9.4px; line-height: 1.35; padding: 5px 7px; }
+    .full-issue-index th:nth-child(1), .full-issue-index td:nth-child(1) { width: 9mm; text-align: center; }
+    .full-issue-index th:nth-child(2), .full-issue-index td:nth-child(2) { width: 18mm; }
+    .full-issue-index th:nth-child(3), .full-issue-index td:nth-child(3) { width: 13mm; text-align: center; }
+    .full-issue-index th:nth-child(4), .full-issue-index td:nth-child(4) { width: 30mm; }
+    .index-no { font-weight: 900; color: #17345b; }
+    .severity-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; border-radius: 6px; padding: 2px 6px; color: #fff; font-weight: 900; font-size: 10px; background: #64748b; }
+    .severity-chip.severity-P0 { background: #b91c1c; }
+    .severity-chip.severity-P1 { background: #dc2626; }
+    .severity-chip.severity-P2 { background: #d97706; }
+    .severity-chip.severity-P3 { background: #64748b; }
     .note { padding: 11px 12px; }
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .insight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 12px 0; }
@@ -5441,11 +7286,17 @@ function renderPdfReportHtml(task, data) {
       <div class="cover-kicker">Pre-submission Quality Control</div>
       <div class="cover-title">${htmlEscape(REPORT_TITLE)}</div>
       <div class="cover-rule"></div>
-      <p class="subtle">面向临床 SCI 投稿前的结构化质控、风险定位与修改优先级建议。</p>
+      ${coverSubtitle ? `<p class="subtle">${htmlEscape(coverSubtitle)}</p>` : ""}
+      <div class="title-stack">
+        <div class="title-item"><div class="summary-label">完整英文题目</div><div class="summary-value">${htmlEscape(englishTitle || "未提供")}</div></div>
+        <div class="title-item"><div class="summary-label">完整中文题目</div><div class="summary-value">${htmlEscape(chineseTitle || "未提供")}</div></div>
+      </div>
       <div class="cover-summary">
         <div class="summary-item"><div class="summary-label">Manuscript</div><div class="summary-value">${htmlEscape(task.originalFilename || "-")}</div></div>
         <div class="summary-item"><div class="summary-label">Overall Score</div><div class="summary-value">${htmlEscape(scoreDisplay)}</div></div>
-        <div class="summary-item"><div class="summary-label">Risk Level</div><div class="summary-value">${htmlEscape(data.riskLevel)}</div></div>
+        <div class="summary-item"><div class="summary-label">Risk Level</div><div class="summary-value">${htmlEscape(data.riskLevel || "未提供")}</div></div>
+        <div class="summary-item"><div class="summary-label">Target Score</div><div class="summary-value">${htmlEscape(targetScore)}</div></div>
+        <div class="summary-item"><div class="summary-label">SCI Positioning</div><div class="summary-value">${htmlEscape(publicationPositioning)}</div></div>
         <div class="summary-item"><div class="summary-label">Task ID</div><div class="summary-value">${htmlEscape(task.id)}</div></div>
         <div class="summary-item"><div class="summary-label">Customer Info</div><div class="summary-value">${htmlEscape(task.customerInfo || "未填写")}</div></div>
         <div class="summary-item"><div class="summary-label">Version</div><div class="summary-value">${htmlEscape(data.version)}</div></div>
@@ -5457,71 +7308,87 @@ function renderPdfReportHtml(task, data) {
     </div>
   </section>
 
-  ${pageFrame("01", "一页式总览", "用一页呈现投稿前最重要的结论、风险等级、问题数量和最小修改方向。",
+  ${pageFrame("01", "综合裁决摘要", overviewLead,
   `<div class="overview-grid">
       <div class="hero-card">
         <p><span class="risk">${htmlEscape(data.riskLevel)}</span></p>
+        <h3>稿件摘要</h3>
+        <p>${htmlEscape(data.finalJson.summary || "暂无摘要。")}</p>
         <h3>总体结论</h3>
         <p>${htmlEscape(data.finalJson.overall_conclusion || "暂无总体结论。")}</p>
-        <h3>200字以内摘要</h3>
-        <p>${htmlEscape(data.finalJson.summary || "暂无摘要。")}</p>
+        <h3>风险依据</h3>
+        <p>${htmlEscape(data.riskReason || data.tierJustification || data.scoreSummary.overallScoreRationale || "未提供")}</p>
       </div>
       <div class="score-panel">
         <div class="score-label">OVERALL SCORE</div>
         <div class="score-number">${htmlEscape(scoreDisplay)}</div>
         <div class="score-status">${htmlEscape(scoreLabel)}</div>
-        <p class="subtle">${htmlEscape(scoreRationale)}</p>
+        <p class="subtle">${htmlEscape(scoreRationale || "未提供")}</p>
       </div>
     </div>
     <div class="metric-grid">
       <div class="metric"><div class="label">全部问题</div><div class="value">${totalIssues}</div></div>
       ${["P0", "P1", "P2", "P3"].map((key) => `<div class="metric metric-${key.toLowerCase()}"><div class="label">${key} 问题</div><div class="value">${data.severityCounts[key] || 0}</div></div>`).join("")}
     </div>
+    <div class="severity-legend">
+      <span><strong class="p0">P0</strong> 阻断级</span>
+      <span><strong class="p1">P1</strong> 必改级</span>
+      <span><strong class="p2">P2</strong> 重要优化</span>
+      <span><strong class="p3">P3</strong> 技术规范</span>
+    </div>
+    <div class="two-col">
+      <div class="note"><h3>重点风险</h3>${page05Risks.length ? `<ul>${page05Risks.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<p>未提供</p>"}</div>
+      <div class="note"><h3>建议处理动作</h3>${page05Actions.length ? `<ul>${page05Actions.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<p>未提供</p>"}</div>
+    </div>
     <div class="insight-grid">
-      <div class="insight-card"><div class="label">优先处理</div><div class="text">${priorityIssues.length ? `建议先处理 ${priorityIssues.length} 项核心问题` : "未锁定优先问题"}</div></div>
-      <div class="insight-card"><div class="label">修改方向</div><div class="text">${htmlEscape(data.minRevisionAdvice)}</div></div>
+      <div class="insight-card"><div class="label">优先处理</div><div class="text">${priorityIssues.length ? `条目序号：${priorityIssueIds}` : "未提供"}</div></div>
+      <div class="insight-card"><div class="label">修改方向</div><div class="text">${htmlEscape(revisionDirection || "未提供")}</div></div>
       <div class="insight-card"><div class="label">报告用途</div><div class="text">用于内部投稿前质控、修改排序和交付沟通。</div></div>
     </div>`)}
 
-  ${pageFrame("02", "综合评分与六维雷达", "评分来自最终综合判断，用于辅助识别主要短板和修订投入方向。",
-  `<div class="overview-grid">
-      <div class="score-panel">
+  ${pageFrame("02", `${scoreDimensionLabel}画像`, "",
+  `<div class="radar-layout">
+      <div class="chart-card radar-card">${renderRadarSvg(data.moduleScores)}</div>
+      <div class="score-panel score-panel-compact">
         <div class="score-label">OVERALL SCORE</div>
         <div class="score-number">${htmlEscape(scoreDisplay)}</div>
         <div class="score-status">${htmlEscape(scoreLabel)}</div>
-        <p class="subtle">${htmlEscape(scoreRationale)}</p>
+        <p class="subtle">${htmlEscape(scoreRationale || "未提供")}</p>
       </div>
-      <div class="chart-card">${renderRadarSvg(data.moduleScores)}</div>
     </div>
-    <table>
-      <thead><tr><th>维度</th><th>分数</th><th>简要理由</th><th>六维诊断</th></tr></thead>
+    <table class="score-table-compact">
+      <thead><tr><th>维度</th><th>分数</th><th>简短理由</th></tr></thead>
       <tbody>${renderScoreTableRows(data.moduleScores)}</tbody>
     </table>`)}
 
   ${dataAnalyticsPage}
 
-  ${pageFrame("04", "优先处理问题", "以下问题按投稿前处理优先级排列，建议先完成这些修订，再处理其余优化项。",
-  `${priorityIssues.length ? priorityIssues.map(renderIssueCard).join("") : `<div class="note">未锁定需要优先处理的问题。</div>`}`)}
-
-  ${pageFrame("05", "图表与材料完成度摘要", "仅展示客户友好的材料完成度结论和修改动作，不展示文件解析或内部调试过程。",
+  ${pageFrame("04", "优先修订方向与修后投稿定位", "",
   `<div class="two-col">
       <div class="note">
-        <h3>总体判断</h3>
-        <p>${htmlEscape(artifactCompletion.overview || "暂无图表与材料完成度摘要。")}</p>
+        <h3>优先修订方向</h3>
+        ${revisionFocus.length ? `<ul>${revisionFocus.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<p>未提供</p>"}
       </div>
       <div class="note">
-        <h3>重点风险</h3>
-        ${artifactCompletion.key_risks?.length ? `<ul>${artifactCompletion.key_risks.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<p>未锁定单独的图表材料风险。</p>"}
+        <h3>修后投稿定位</h3>
+        <p>${htmlEscape(publicationPositioning)}</p>
+        <h3>目标分值</h3>
+        <p>${htmlEscape(targetScore)}</p>
       </div>
     </div>
-    <h3>建议处理动作</h3>
-    ${artifactCompletion.recommended_actions?.length ? `<ul>${artifactCompletion.recommended_actions.map((item) => `<li>${htmlEscape(item)}</li>`).join("")}</ul>` : "<div class=\"note\">按完整问题清单逐项核对图号、表号、图注、表题和正文引用即可。</div>"}`)}
+    <div class="note"><h3>修订强度</h3><p>${htmlEscape(data.revisionWorkload || "未提供")}</p></div>`)}
 
-  ${pageFrame("06", "完整问题清单", "本页保留最终锁定问题的客户版完整清单，用于后续逐项修改和复核。",
-  `<h3>完整问题清单</h3>
-    ${fullIssues.length ? fullIssues.map(renderIssueCard).join("") : `<div class="note">暂无结构化问题清单。</div>`}
-    <h3>投稿前检查清单</h3>
-    <ul>${(data.checklist || []).map((item) => `<li>${htmlEscape(customerFacingText(toPlainReportText(item)))}</li>`).join("") || "<li>暂无检查清单。</li>"}</ul>`)}
+  ${pageFrame("05", "优先处理问题索引", priorityLead,
+  `${priorityIssues.length
+    ? `<table class="priority-index"><thead><tr><th>#</th><th>编号</th><th>级别</th><th>归属</th><th>问题名称</th><th>精准定位</th></tr></thead><tbody>${renderPriorityIndexRows(priorityIssues)}</tbody></table>`
+    : `<div class="note">未锁定需要优先处理的问题。</div>`}
+    <div class="note"><strong>最终问题池数量：</strong>${totalIssues} 项。</div>`)}
+
+  ${priorityDetailPages}
+
+  ${issueIndexPages}
+
+  ${checklistPage}
 </body>
 </html>`;
 }
@@ -5672,10 +7539,22 @@ async function ensurePdfReport(task) {
 }
 
 async function generateReport(task) {
-  const finalJson = task.finalJson || {};
+  const finalJson = task.issueListJson && task.conclusionParametersJson
+    ? materializeV3ReportJsonFromFiles(
+      task.issueListJson,
+      task.conclusionParametersJson,
+      task.issueListText || "",
+      task.conclusionParametersText || "",
+      task.finalJson || {},
+      task.artifactManifest
+    )
+    : task.finalJson || {};
   const scoreSummary = normalizeModelScoreSummary(finalJson.report_content || {});
   const docxIssueSections = buildDocxIssueSections(task, finalJson);
   const reportStatus = task.status === "docx_generating" ? "succeeded" : task.status;
+  const checklistItems = Array.isArray(finalJson.pre_submission_checklist) ? finalJson.pre_submission_checklist : [];
+  const scoreSectionNumber = checklistItems.length ? "十一" : "十";
+  const fullTextSectionNumber = checklistItems.length ? "十二" : "十一";
   const children = [
     paragraph("投稿前预审质控报告与修改意见", {
       heading: HeadingLevel.TITLE,
@@ -5706,11 +7585,15 @@ async function generateReport(task) {
     ...renderList(docxIssueSections.textAndFigureComments),
     paragraph("九、合规与风险提示", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
     ...renderList(docxIssueSections.complianceRisk),
-    paragraph("十、投稿前检查清单", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
-    ...renderList(finalJson.pre_submission_checklist),
-    paragraph("十一、模型评分摘要", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
+    ...(checklistItems.length
+      ? [
+          paragraph("十、投稿前检查清单", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
+          ...renderList(checklistItems)
+        ]
+      : []),
+    paragraph(`${scoreSectionNumber}、模型评分摘要`, { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
     ...renderScoreSummary(scoreSummary),
-    paragraph("十二、完整报告正文", { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
+    paragraph(`${fullTextSectionNumber}、完整报告正文`, { heading: HeadingLevel.HEADING_1, bold: true, size: 28 }),
     ...renderTextBlock(finalJson.final_review_text)
   ];
 
@@ -5753,6 +7636,11 @@ async function processTask(taskId) {
     task.stageOutputs = [];
     task.stageRunOutputs = [];
     task.stageConsistencyReports = [];
+    task.cleanerOutput = null;
+    task.issueListText = "";
+    task.issueListJson = null;
+    task.conclusionParametersText = "";
+    task.conclusionParametersJson = null;
     task.finalJson = null;
     task.adjudicatorOutput = null;
     task.adjudicatorJson = null;
@@ -5770,7 +7658,6 @@ async function processTask(taskId) {
     await ensurePromptSnapshotFile(task);
     ensureNotCancelled(task);
 
-    const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
     const config = getEnabledConfig();
     if (!config) {
       task.manualMode = true;
@@ -5780,57 +7667,20 @@ async function processTask(taskId) {
       return;
     }
 
-    pushProgress(task, "stage1_running", "开始执行 V2.1 六 Agent 双跑预审");
+    pushProgress(task, "stage1_running", "开始执行 V3 五 Agent 单跑预审");
     await saveDb();
 
     for (const stage of REVIEW_STAGES) {
       ensureNotCancelled(task);
       const prompt = getSnapshotPrompt(promptSnapshot, stage.key);
-      const runRecords = [];
-      for (let runIndex = 1; runIndex <= 2; runIndex += 1) {
-        ensureNotCancelled(task);
-        const result = await callChatModel(
-          config,
-          buildSystemPrompt(globalPrompt.content, prompt.content),
-          `${buildStageUserInput(task, manuscriptText, artifactManifest)}\n\n【本次运行】\n这是 ${stage.title} 的第 ${runIndex} 次独立审稿。请不要引用另一轮结果。`,
-          { callType: "agent", stageKey: stage.key }
-        );
-        const issues = parseStageIssues(result.output, stage.key);
-        const runRecord = {
-          stage: stage.key,
-          title: stage.title,
-          run: runIndex,
-          model: config.model,
-          prompt_id: prompt.id,
-          prompt_version: prompt.version,
-          prompt_hash: prompt.contentHash || hashPromptContent(prompt.content),
-          global_prompt_id: globalPrompt.id,
-          global_prompt_version: globalPrompt.version,
-          global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
-          tokens: result.usage,
-          requestSettings: result.requestSettings,
-          finishReason: result.finishReason,
-          latencyMs: result.latencyMs,
-          output: result.output,
-          issues,
-          issueCount: issues.length,
-          createdAt: nowIso()
-        };
-        runRecords.push(runRecord);
-        task.stageRunOutputs.push(runRecord);
-        task.updatedAt = nowIso();
-        await saveDb();
-      }
-
-      const comparator = await runConsistencyComparator(config, promptSnapshot, task, stage, artifactManifest, runRecords);
-      const consistency = comparator.consistency;
-      const mergedIssues = comparator.mergedIssues;
-      task.stageConsistencyReports.push({
-        stage: stage.key,
-        title: stage.title,
-        ...consistency,
-        createdAt: nowIso()
-      });
+      ensureNotCancelled(task);
+      const result = await callChatModel(
+        config,
+        prompt.content,
+        buildStageUserInput(task, manuscriptText, artifactManifest),
+        { callType: "agent", stageKey: stage.key }
+      );
+      const issues = parseStageIssues(result.output, stage.key);
       task.stageOutputs.push({
         stage: stage.key,
         title: stage.title,
@@ -5838,25 +7688,30 @@ async function processTask(taskId) {
         prompt_id: prompt.id,
         prompt_version: prompt.version,
         prompt_hash: prompt.contentHash || hashPromptContent(prompt.content),
-        global_prompt_id: globalPrompt.id,
-        global_prompt_version: globalPrompt.version,
-        global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
-        tokens: {
-          inputTokens: runRecords.reduce((sum, item) => sum + (item.tokens?.inputTokens || 0), 0) || null,
-          outputTokens: runRecords.reduce((sum, item) => sum + (item.tokens?.outputTokens || 0), 0) || null,
-          totalTokens: runRecords.reduce((sum, item) => sum + (item.tokens?.totalTokens || 0), 0) || null,
-          reasoningTokens: runRecords.reduce((sum, item) => sum + (item.tokens?.reasoningTokens || 0), 0) || null
-        },
-        requestSettings: {
-          agentRuns: runRecords.map((item) => item.requestSettings).filter(Boolean),
-          comparator: consistency.requestSettings || null
-        },
-        finishReason: "merged_double_run",
-        latencyMs: runRecords.reduce((sum, item) => sum + (item.latencyMs || 0), 0) || null,
-        output: buildMergedStageOutput(stage, mergedIssues, consistency),
-        issues: mergedIssues,
-        issueCount: mergedIssues.length,
-        consistency,
+        tokens: result.usage,
+        requestSettings: result.requestSettings,
+        finishReason: result.finishReason,
+        latencyMs: result.latencyMs,
+        output: result.output,
+        issues,
+        issueCount: issues.length,
+        createdAt: nowIso()
+      });
+      task.stageRunOutputs.push({
+        stage: stage.key,
+        title: stage.title,
+        run: 1,
+        model: config.model,
+        prompt_id: prompt.id,
+        prompt_version: prompt.version,
+        prompt_hash: prompt.contentHash || hashPromptContent(prompt.content),
+        tokens: result.usage,
+        requestSettings: result.requestSettings,
+        finishReason: result.finishReason,
+        latencyMs: result.latencyMs,
+        output: result.output,
+        issues,
+        issueCount: issues.length,
         createdAt: nowIso()
       });
       task.updatedAt = nowIso();
@@ -5864,34 +7719,69 @@ async function processTask(taskId) {
     }
 
     ensureNotCancelled(task);
-    pushProgress(task, "stage2_running", "开始生成终稿输出");
+    pushProgress(task, "cleaner_running", "开始由清洁员整理问题清单");
     await saveDb();
 
-    const finalPrompt = getSnapshotPrompt(promptSnapshot, FINAL_STAGE.key);
-    const finalResult = await callChatModel(
+    const cleanerPrompt = getSnapshotPrompt(promptSnapshot, CLEANER_STAGE.key);
+    const cleanerResult = await callChatModel(
       config,
-      buildSystemPrompt(globalPrompt.content, finalPrompt.content),
-      buildFinalUserInput(task, manuscriptText, task.stageOutputs, artifactManifest),
-      { callType: "final", stageKey: FINAL_STAGE.key }
+      cleanerPrompt.content,
+      buildCleanerUserInput(task, manuscriptText, task.stageOutputs, artifactManifest),
+      { callType: "cleaner", stageKey: CLEANER_STAGE.key }
     );
-    task.finalOutput = {
-      stage: FINAL_STAGE.key,
-      title: FINAL_STAGE.title,
+    const cleanerParsed = parseV3CleanerOutput(cleanerResult.output);
+    task.cleanerOutput = {
+      stage: CLEANER_STAGE.key,
+      title: CLEANER_STAGE.title,
       model: config.model,
-      prompt_id: finalPrompt.id,
-      prompt_version: finalPrompt.version,
-      prompt_hash: finalPrompt.contentHash || hashPromptContent(finalPrompt.content),
-      global_prompt_id: globalPrompt.id,
-      global_prompt_version: globalPrompt.version,
-      global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
-      tokens: finalResult.usage,
-      requestSettings: finalResult.requestSettings,
-      finishReason: finalResult.finishReason,
-      latencyMs: finalResult.latencyMs,
-      output: finalResult.output,
+      prompt_id: cleanerPrompt.id,
+      prompt_version: cleanerPrompt.version,
+      prompt_hash: cleanerPrompt.contentHash || hashPromptContent(cleanerPrompt.content),
+      tokens: cleanerResult.usage,
+      requestSettings: cleanerResult.requestSettings,
+      finishReason: cleanerResult.finishReason,
+      latencyMs: cleanerResult.latencyMs,
+      output: cleanerResult.output,
       createdAt: nowIso()
     };
-    task.finalJson = parseFinalJson(finalResult.output);
+    task.issueListText = cleanerParsed.issueListText;
+    task.issueListJson = cleanerParsed.issueListJson;
+    await saveDb();
+
+    ensureNotCancelled(task);
+    pushProgress(task, "stage2_running", "开始生成裁决者结论参数");
+    await saveDb();
+
+    const adjudicatorPrompt = getSnapshotPrompt(promptSnapshot, ADJUDICATOR_STAGE.key);
+    const adjudicatorResult = await callChatModel(
+      config,
+      adjudicatorPrompt.content,
+      buildAdjudicatorParametersUserInput(task, manuscriptText, task.issueListText, task.issueListJson, artifactManifest),
+      { callType: "adjudicator", stageKey: ADJUDICATOR_STAGE.key }
+    );
+    const adjudicatorParsed = parseV3ConclusionParametersOutput(adjudicatorResult.output);
+    task.adjudicatorOutput = {
+      stage: ADJUDICATOR_STAGE.key,
+      title: ADJUDICATOR_STAGE.title,
+      model: config.model,
+      prompt_id: adjudicatorPrompt.id,
+      prompt_version: adjudicatorPrompt.version,
+      prompt_hash: adjudicatorPrompt.contentHash || hashPromptContent(adjudicatorPrompt.content),
+      tokens: adjudicatorResult.usage,
+      requestSettings: adjudicatorResult.requestSettings,
+      finishReason: adjudicatorResult.finishReason,
+      latencyMs: adjudicatorResult.latencyMs,
+      output: adjudicatorResult.output,
+      createdAt: nowIso()
+    };
+    task.conclusionParametersText = adjudicatorParsed.conclusionParametersText;
+    task.conclusionParametersJson = adjudicatorParsed.conclusionParametersJson;
+    task.adjudicatorJson = task.conclusionParametersJson;
+    await saveDb();
+
+    ensureNotCancelled(task);
+    task.finalOutput = null;
+    task.finalJson = materializeV3ReportJsonFromFiles(task.issueListJson, task.conclusionParametersJson, task.issueListText, task.conclusionParametersText, null, task.artifactManifest);
     ensureExpandedFinalReviewText(task);
     task.summary = task.finalJson.summary;
     await saveDb();
@@ -5960,18 +7850,20 @@ function buildStageOutputText(task) {
     ""
   ];
 
-  pushSection(lines, "一、6 个 Agent 双跑 + 一致性比较输出结果");
+  pushSection(lines, "一、V3 五 Agent 单跑输出结果");
   pushArtifactSummaryLines(lines, task.artifactManifest, { subsection: true });
   pushPromptSnapshotSummaryLines(lines, task, { subsection: true });
   pushRunnerMetadataLines(lines, task, { subsection: true });
   pushStageRunOutputLines(lines, task, { subsection: true });
-  pushConsistencyReportLines(lines, task, { subsection: true });
   pushMergedStageOutputLines(lines, task, { subsection: true });
 
-  pushSection(lines, "二、裁决者裁决后的阶段输出");
+  pushSection(lines, "二、清洁员问题清单输出");
+  pushCleanerOutputLines(lines, task);
+
+  pushSection(lines, "三、裁决者参数输出");
   pushAdjudicatorOutputLines(lines, task);
 
-  pushSection(lines, "三、终稿输出");
+  pushSection(lines, "四、报告物化摘要");
   pushFinalOutputLines(lines, task);
 
   return lines.join("\n");
@@ -6121,7 +8013,7 @@ async function bootstrap() {
       await parseAndStoreManuscript(task);
       await analyzeAndStoreArtifacts(task);
       await ensurePromptSnapshotFile(task);
-      pushProgress(task, "manual_stage_pending", "已完成 Python 文件状态检测，已生成可复制的 V2.1 人工代跑指令");
+      pushProgress(task, "manual_stage_pending", "已完成 Python 文件状态检测，已生成可复制的 V3 人工代跑指令");
       db.tasks.unshift(task);
       await saveDb();
       res.status(201).json(toAdminTask(task));
@@ -6341,13 +8233,33 @@ async function bootstrap() {
     res.json({
       ...toAdminTask(task),
       stageOutputs: task.stageOutputs || [],
-      finalOutput: task.finalOutput || null
+      finalOutput: task.finalOutput || null,
+      issueListText: task.issueListText || "",
+      conclusionParametersText: task.conclusionParametersText || task.adjudicatorParametersText || ""
     });
   });
 
   app.get("/api/v1/admin/review-tasks/:taskId/report", requireAdmin, sendTaskDocxReport);
 
   app.get("/api/v1/admin/review-tasks/:taskId/report.pdf", requireAdmin, sendTaskPdfReport);
+
+  app.get("/api/v1/admin/review-tasks/:taskId/issue-list/download", requireAdmin, (req, res) => {
+    const task = findTask(req.params.taskId);
+    if (!task) return jsonError(res, 404, "任务不存在");
+    const text = String(task.issueListText || "").trim();
+    if (!text) return jsonError(res, 400, "问题清单尚未生成");
+    setDownloadHeaders(res, `${task.id}_问题清单.txt`, "text/plain; charset=utf-8");
+    res.send(`问题清单.txt:\n${text}\n`);
+  });
+
+  app.get("/api/v1/admin/review-tasks/:taskId/adjudicator-parameters/download", requireAdmin, (req, res) => {
+    const task = findTask(req.params.taskId);
+    if (!task) return jsonError(res, 404, "任务不存在");
+    const text = String(task.adjudicatorParametersText || task.conclusionParametersText || "").trim();
+    if (!text) return jsonError(res, 400, "裁决参数尚未生成");
+    setDownloadHeaders(res, `${task.id}_裁决参数.txt`, "text/plain; charset=utf-8");
+    res.send(`裁决者参数.txt:\n${text}\n`);
+  });
 
   app.delete("/api/v1/admin/review-tasks/:taskId", requireAdmin, async (req, res) => {
     const index = db.tasks.findIndex((task) => task.id === req.params.taskId);
@@ -6427,7 +8339,7 @@ async function bootstrap() {
     task.reportVersion = "";
     task.pdfReportVersion = "";
     delete task.cancelRequested;
-    pushProgress(task, "manual_stage_pending", "已生成可下载的六 Agent 人工预审材料");
+    pushProgress(task, "manual_stage_pending", "已生成可下载的 V3 五 Agent 人工预审材料");
     await saveDb();
     res.json(toAdminTask(task));
   });
@@ -6459,7 +8371,7 @@ async function bootstrap() {
     await ensurePromptSnapshotFile(task);
     await saveDb();
     const content = buildManualStageInputText(task, manuscriptText);
-    setDownloadHeaders(res, `${task.id}_人工代跑_六Agent预审材料.txt`, "text/plain; charset=utf-8");
+    setDownloadHeaders(res, `${task.id}_人工代跑_V3五Agent预审材料.txt`, "text/plain; charset=utf-8");
     res.send(content);
   });
 
@@ -6481,7 +8393,6 @@ async function bootstrap() {
     const model = String(req.body?.model || "manual").trim() || "manual";
     await ensurePromptSnapshotFile(task);
     const promptSnapshot = ensurePromptSnapshot(task);
-    const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
     const missingStage = REVIEW_STAGES.find((stage) => !String(outputs[stage.key] || "").trim());
     if (missingStage) return jsonError(res, 400, `请填写${missingStage.title}输出`);
 
@@ -6495,9 +8406,6 @@ async function bootstrap() {
         prompt_id: prompt.id,
         prompt_version: prompt.version,
         prompt_hash: prompt.contentHash || hashPromptContent(prompt.content),
-        global_prompt_id: globalPrompt.id,
-        global_prompt_version: globalPrompt.version,
-        global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
         tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
         finishReason: "manual",
         latencyMs: null,
@@ -6519,7 +8427,7 @@ async function bootstrap() {
     task.pdfReportPath = "";
     task.reportVersion = "";
     task.pdfReportVersion = "";
-    pushProgress(task, "manual_final_pending", "六 Agent 人工输出已保存，可下载终稿输出材料");
+    pushProgress(task, "manual_final_pending", "V3 五 Agent 人工输出已保存，可下载后续输出材料");
     await saveDb();
     res.json(toAdminTask(task));
   });
@@ -6531,7 +8439,7 @@ async function bootstrap() {
     await ensurePromptSnapshotFile(task);
     await saveDb();
     const content = buildManualFinalInputText(task, manuscriptText);
-    setDownloadHeaders(res, `${task.id}_人工代跑_终稿输出材料.txt`, "text/plain; charset=utf-8");
+    setDownloadHeaders(res, `${task.id}_人工代跑_问题清单与结论参数材料.txt`, "text/plain; charset=utf-8");
     res.send(content);
   });
 
@@ -6539,33 +8447,55 @@ async function bootstrap() {
     const task = findTask(req.params.taskId);
     if (!task) return jsonError(res, 404, "任务不存在");
     const output = typeof req.body?.output === "object" ? JSON.stringify(req.body.output) : String(req.body?.output || "").trim();
-    if (!output) return jsonError(res, 400, "请填写终稿输出 JSON / 输出");
+    if (!output) return jsonError(res, 400, "请填写结论参数输出或旧版终稿输出 JSON");
     if ((task.stageOutputs || []).length < REVIEW_STAGES.length) {
-      return jsonError(res, 400, "请先提交完整六 Agent 人工预审输出");
+      return jsonError(res, 400, "请先提交完整 V3 五 Agent 人工预审输出");
     }
 
     await ensurePromptSnapshotFile(task);
     const promptSnapshot = ensurePromptSnapshot(task);
-    const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
-    const finalPrompt = getSnapshotPrompt(promptSnapshot, FINAL_STAGE.key);
-    task.finalOutput = {
-      stage: FINAL_STAGE.key,
-      title: FINAL_STAGE.title,
-      model: String(req.body?.model || "manual").trim() || "manual",
-      prompt_id: finalPrompt.id,
-      prompt_version: finalPrompt.version,
-      prompt_hash: finalPrompt.contentHash || hashPromptContent(finalPrompt.content),
-      global_prompt_id: globalPrompt.id,
-      global_prompt_version: globalPrompt.version,
-      global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
-      tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
-      finishReason: "manual",
-      latencyMs: null,
-      output,
-      manual: true,
-      createdAt: nowIso()
-    };
-    task.finalJson = parseFinalJson(output);
+    if (/^[ \t]*(?:issue_list_txt|问题清单\.txt|conclusion_parameters_txt|结论参数\.txt)/im.test(output) || /^[ \t]*conclusion_parameters[ \t]+JSON[ \t]*:/im.test(output)) {
+      const parsedPackage = parseV3TwoFileReportOutput(output, task);
+      task.issueListText = parsedPackage.issueListText;
+      task.issueListJson = parsedPackage.issueListJson;
+      task.conclusionParametersText = parsedPackage.conclusionParametersText;
+      task.conclusionParametersJson = parsedPackage.conclusionParametersJson;
+      const adjudicatorPrompt = getSnapshotPrompt(promptSnapshot, ADJUDICATOR_STAGE.key);
+      task.adjudicatorOutput = {
+        stage: ADJUDICATOR_STAGE.key,
+        title: ADJUDICATOR_STAGE.title,
+        model: String(req.body?.model || "manual").trim() || "manual",
+        prompt_id: adjudicatorPrompt.id,
+        prompt_version: adjudicatorPrompt.version,
+        prompt_hash: adjudicatorPrompt.contentHash || hashPromptContent(adjudicatorPrompt.content),
+        tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
+        finishReason: "manual",
+        latencyMs: null,
+        output: parsedPackage.adjudicatorOutput,
+        manual: true,
+        createdAt: nowIso()
+      };
+      task.adjudicatorJson = parsedPackage.adjudicatorJson;
+      task.finalOutput = null;
+      task.finalJson = parsedPackage.finalJson;
+    } else {
+      const finalPrompt = promptSnapshot.prompts?.[FINAL_STAGE.key] || { id: "", version: "", contentHash: "" };
+      task.finalOutput = {
+        stage: FINAL_STAGE.key,
+        title: FINAL_STAGE.title,
+        model: String(req.body?.model || "manual").trim() || "manual",
+        prompt_id: finalPrompt.id || "",
+        prompt_version: finalPrompt.version || "",
+        prompt_hash: finalPrompt.contentHash || "",
+        tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
+        finishReason: "manual",
+        latencyMs: null,
+        output,
+        manual: true,
+        createdAt: nowIso()
+      };
+      task.finalJson = parseFinalJson(output);
+    }
     ensureExpandedFinalReviewText(task);
     task.summary = task.finalJson.summary;
     task.error = "";
@@ -6573,7 +8503,7 @@ async function bootstrap() {
     task.pdfReportPath = "";
     task.reportVersion = "";
     task.pdfReportVersion = "";
-    pushProgress(task, "docx_generating", "开始根据人工终稿输出生成 Word 与 PDF 质控报告");
+    pushProgress(task, "docx_generating", "开始根据人工输出生成 Word 与 PDF 质控报告");
     await saveDb();
 
     await generateTaskReports(task);
@@ -6613,7 +8543,6 @@ async function bootstrap() {
 
     await ensurePromptSnapshotFile(task);
     const promptSnapshot = ensurePromptSnapshot(task);
-    const globalPrompt = getSnapshotPrompt(promptSnapshot, GLOBAL_STAGE.key);
     task.manualMode = true;
     task.manualReason = task.manualReason || "管理员导入 skills 人工代跑输出";
     task.runnerMetadata = parsedPackage.runnerMetadata || null;
@@ -6628,10 +8557,34 @@ async function bootstrap() {
 
     task.stageRunOutputs = [];
     task.stageConsistencyReports = [];
+    task.cleanerOutput = parsedPackage.cleanerOutput
+      ? {
+          stage: CLEANER_STAGE.key,
+          title: CLEANER_STAGE.title,
+          model,
+          prompt_id: promptSnapshot.prompts?.[CLEANER_STAGE.key]?.id || "",
+          prompt_version: promptSnapshot.prompts?.[CLEANER_STAGE.key]?.version || "",
+          prompt_hash: promptSnapshot.prompts?.[CLEANER_STAGE.key]?.contentHash || "",
+          tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
+          finishReason: "manual_skill",
+          latencyMs: null,
+          output: parsedPackage.cleanerOutput,
+          manual: true,
+          createdAt: nowIso()
+        }
+      : null;
+    task.issueListText = parsedPackage.issueListText || "";
+    task.issueListJson = parsedPackage.issueListJson || null;
+    task.conclusionParametersText = parsedPackage.conclusionParametersText || "";
+    task.adjudicatorParametersText = parsedPackage.adjudicatorParametersText || parsedPackage.conclusionParametersText || "";
+    task.conclusionParametersJson = parsedPackage.conclusionParametersJson || null;
+    task.v4AgentReportsText = parsedPackage.v4AgentReportsText || null;
+    task.v4ParsedIssueList = parsedPackage.v4ParsedIssueList || null;
+    task.v4ParsedAdjudicatorParameters = parsedPackage.v4ParsedAdjudicatorParameters || null;
     task.stageOutputs = parsedPackage.stageOutputs
       ? parsedPackage.stageOutputs.map((item) => {
           const stage = REVIEW_STAGES.find((candidate) => candidate.key === item.stage) || { key: item.stage, title: item.title || item.stage };
-          const prompt = getSnapshotPrompt(promptSnapshot, stage.key);
+          const prompt = promptSnapshot.prompts?.[stage.key] || { id: "", version: "", contentHash: "" };
           const consistency = item.consistency || parsedPackage.consistencyReports?.[stage.key] || {};
           task.stageConsistencyReports.push({
             stage: stage.key,
@@ -6647,9 +8600,6 @@ async function bootstrap() {
             prompt_id: prompt.id,
             prompt_version: prompt.version,
             prompt_hash: prompt.contentHash || hashPromptContent(prompt.content),
-            global_prompt_id: globalPrompt.id,
-            global_prompt_version: globalPrompt.version,
-            global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
             tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
             finishReason: "manual_skill_v2_merged",
             latencyMs: null,
@@ -6662,7 +8612,7 @@ async function bootstrap() {
           };
         })
       : REVIEW_STAGES.map((stage) => {
-      const prompt = getSnapshotPrompt(promptSnapshot, stage.key);
+      const prompt = promptSnapshot.prompts?.[stage.key] || { id: "", version: "", contentHash: "" };
       const legacyStage = LEGACY_REVIEW_STAGES[REVIEW_STAGES.indexOf(stage)];
       const output = parsedPackage.outputs[stage.key] || parsedPackage.outputs[legacyStage?.key] || "";
       const issues = parseStageIssues(output, stage.key);
@@ -6673,9 +8623,6 @@ async function bootstrap() {
         prompt_id: prompt.id,
         prompt_version: prompt.version,
         prompt_hash: prompt.contentHash || hashPromptContent(prompt.content),
-        global_prompt_id: globalPrompt.id,
-        global_prompt_version: globalPrompt.version,
-        global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
         tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
         finishReason: "manual_skill",
         latencyMs: null,
@@ -6711,9 +8658,6 @@ async function bootstrap() {
         prompt_id: adjudicatorPrompt.id,
         prompt_version: adjudicatorPrompt.version,
         prompt_hash: adjudicatorPrompt.contentHash || hashPromptContent(adjudicatorPrompt.content),
-        global_prompt_id: globalPrompt.id,
-        global_prompt_version: globalPrompt.version,
-        global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
         tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
         finishReason: "manual_skill",
         latencyMs: null,
@@ -6727,24 +8671,25 @@ async function bootstrap() {
       task.adjudicatorJson = null;
     }
 
-    const finalPrompt = getSnapshotPrompt(promptSnapshot, FINAL_STAGE.key);
-    task.finalOutput = {
-      stage: FINAL_STAGE.key,
-      title: FINAL_STAGE.title,
-      model,
-      prompt_id: finalPrompt.id,
-      prompt_version: finalPrompt.version,
-      prompt_hash: finalPrompt.contentHash || hashPromptContent(finalPrompt.content),
-      global_prompt_id: globalPrompt.id,
-      global_prompt_version: globalPrompt.version,
-      global_prompt_hash: globalPrompt.contentHash || hashPromptContent(globalPrompt.content),
-      tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
-      finishReason: "manual_skill",
-      latencyMs: null,
-      output: parsedPackage.finalOutput,
-      manual: true,
-      createdAt: nowIso()
-    };
+    if (parsedPackage.finalOutput) {
+      const finalPrompt = promptSnapshot.prompts?.[FINAL_STAGE.key] || { id: "", version: "", contentHash: "" };
+      task.finalOutput = {
+        stage: FINAL_STAGE.key,
+        title: FINAL_STAGE.title,
+        model,
+        prompt_id: finalPrompt.id || "",
+        prompt_version: finalPrompt.version || "",
+        prompt_hash: finalPrompt.contentHash || "",
+        tokens: { inputTokens: null, outputTokens: null, totalTokens: null },
+        finishReason: "manual_skill",
+        latencyMs: null,
+        output: parsedPackage.finalOutput,
+        manual: true,
+        createdAt: nowIso()
+      };
+    } else {
+      task.finalOutput = null;
+    }
     task.finalJson = parsedPackage.finalJson;
     ensureExpandedFinalReviewText(task);
     task.summary = task.finalJson.summary;
@@ -6781,11 +8726,15 @@ async function bootstrap() {
     return jsonError(res, 500, error.message || "服务器错误");
   });
 
-  app.listen(PORT, HOST || undefined, () => {
+  const server = app.listen(PORT, HOST || undefined, () => {
     const displayHost = HOST || "localhost";
     const exposureText = ADMIN_ONLY_MODE ? "admin-only" : "full";
     console.log(`SCI pre-submission review system running at http://${displayHost}:${PORT} (${exposureText})`);
   });
+  server.on("error", (error) => {
+    console.error("HTTP server failed:", error);
+  });
+  globalThis.__SCI_PRE_REVIEW_SERVER__ = server;
 
   runWorker().catch((error) => console.error("Initial worker failed:", error));
 }

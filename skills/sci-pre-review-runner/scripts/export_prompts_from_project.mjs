@@ -5,17 +5,24 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const STAGES = [
-  { key: "global_system", title: "全局系统提示词" },
-  { key: "selection_innovation", title: "选题创新预审" },
-  { key: "clinical_methods", title: "临床方法预审" },
-  { key: "statistical_results", title: "统计结果预审" },
-  { key: "numerical_audit", title: "数值审计预审" },
-  { key: "figure_table_visual_audit", title: "图表与视觉材料审计" },
-  { key: "submission_safety_expression", title: "投稿安全与表达预审" },
-  { key: "consistency_comparator", title: "通用一致性比较器" },
-  { key: "adjudicator_review", title: "裁决者裁定" },
-  { key: "final_adjudication", title: "终稿输出" }
+  { key: "topic_innovation_rationale", title: "Agent 1 选题创新及合理性" },
+  { key: "statistical_details", title: "Agent 2 统计学细节" },
+  { key: "fulltext_consistency_numerical_audit", title: "Agent 3 全文一致性与数值审计结果" },
+  { key: "figure_table_quality", title: "Agent 4 图表质量与呈现完整性" },
+  { key: "misc_compliance_expression", title: "Agent 5 杂项与投稿安全表达" },
+  { key: "issue_list_cleaner", title: "清洁员 Agent：问题清单整理" },
+  { key: "adjudicator_parameters", title: "裁决者参数 Agent" }
 ];
+
+const DEFAULT_PROMPTS = {
+  topic_innovation_rationale: "你是 Agent 1：选题创新及合理性审稿人。请审查稿件的研究问题、选题发表价值、创新性、临床合理性、证据增量、研究定位、文献基础和结论外推是否适合投稿。",
+  statistical_details: "你是 Agent 2：统计学细节审稿人。请审查统计方法、模型、样本量与事件数、混杂控制、亚组/敏感性分析和结果解释是否足以支撑主要结论。",
+  fulltext_consistency_numerical_audit: "你是 Agent 3：全文一致性与数值审计审稿人。请核对摘要、正文、表格、图片、图注和补充材料之间的样本量、分母、百分比、P 值、效应值、CI、单位、变量名和结论表述是否一致。",
+  figure_table_quality: "你是 Agent 4：图表质量与呈现完整性审稿人。请审查图表体系、图片本体可审阅性、图注表题、编号、图表工作量、可读性和 SCI 呈现风格。",
+  misc_compliance_expression: "你是 Agent 5：杂项、投稿安全与表达审稿人。请审查伦理、知情同意、注册、声明区、版权授权、隐私、AI/模板残留、语言、缩写术语、参考文献和投稿安全风险。",
+  issue_list_cleaner: "你是清洁员 Agent。请汇总前 5 个 Agent 的审稿报告，去重、清洗、编号和归类，生成问题清单.txt 和 issue_list JSON。不得重新审稿或新增前述 Agent 均未提出的问题。",
+  adjudicator_parameters: "你是裁决者参数 Agent。请读取原始 Word 文稿和问题清单，只输出评分、风险等级、修订工作量、投稿建议、优先问题 ID、摘要、总体结论、页面级报告文本和六维诊断等结论参数。"
+};
 
 function parseArgs(argv) {
   const args = {};
@@ -57,10 +64,21 @@ function hashPromptContent(content) {
 
 for (const stage of STAGES) {
   const versions = db.prompts?.[stage.key];
-  if (!Array.isArray(versions)) {
-    throw new Error(`Missing prompt stage: ${stage.key}`);
-  }
-  const published = versions.filter((item) => item.status === "published");
+  const stageVersions = Array.isArray(versions) && versions.length
+    ? versions
+    : [
+        {
+          id: `default-${stage.key}`,
+          stage: stage.key,
+          title: stage.title,
+          version: 1,
+          status: "published",
+          content: DEFAULT_PROMPTS[stage.key],
+          createdAt: new Date().toISOString(),
+          publishedAt: new Date().toISOString()
+        }
+      ];
+  const published = stageVersions.filter((item) => item.status === "published");
   if (published.length !== 1) {
     throw new Error(`Expected exactly one published prompt for ${stage.key}, got ${published.length}`);
   }
@@ -93,7 +111,7 @@ for (const stage of STAGES) {
 const snapshot = {
   exportedAt: new Date().toISOString(),
   sourceProjectRoot: projectRoot,
-  schema_version: "prompt_snapshot.v2",
+  schema_version: "prompt_snapshot.v3",
   adapterVersion: PROMPT_ADAPTER_VERSION,
   stages: STAGES,
   prompts: exported

@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 
 NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
+    "dc": "http://purl.org/dc/elements/1.1/",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "v": "urn:schemas-microsoft-com:vml",
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -84,6 +86,96 @@ def truncate_text(text, limit=500):
     if len(value) <= limit:
         return value
     return f"{value[:limit]}..."
+
+
+def clean_title_text(text):
+    value = re.sub(r"\s+", " ", str(text or "")).strip(" \t:：")
+    value = re.sub(r"^(?:title|题目|标题|论文题目)\s*[:：]\s*", "", value, flags=re.I).strip()
+    return value
+
+
+def is_label_only(text, labels):
+    value = re.sub(r"[\s:：]+", "", str(text or "")).lower()
+    return value in labels
+
+
+def is_title_candidate(text):
+    value = clean_title_text(text)
+    if not value:
+        return False
+    if is_label_only(value, {"title", "runningtitle", "abstract", "keywords", "题目", "标题", "摘要", "关键词"}):
+        return False
+    if re.match(r"^\s*(?:abstract|keywords?|running\s*title|authors?|affiliations?|introduction)\b", value, re.I):
+        return False
+    if len(value) < 12 or len(value) > 300:
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", value))
+
+
+def extract_core_properties(zip_file):
+    root = xml_root(zip_file, "docProps/core.xml")
+    if root is None:
+        return {}
+    return {
+        "title": clean_title_text(root.findtext("dc:title", default="", namespaces=NS)),
+        "subject": clean_title_text(root.findtext("dc:subject", default="", namespaces=NS)),
+    }
+
+
+def extract_title_metadata(records, core_properties=None):
+    core_properties = core_properties or {}
+    texts = [record["text"] for record in records if record.get("text")]
+    first_texts = texts[:80]
+    manuscript_title = ""
+    running_title = ""
+    title_source = ""
+
+    core_title = clean_title_text(core_properties.get("title") or "")
+    if is_title_candidate(core_title):
+        manuscript_title = core_title
+        title_source = "docProps/core.xml dc:title"
+
+    for index, text in enumerate(first_texts):
+        if manuscript_title and running_title:
+            break
+        stripped = text.strip()
+        inline_title = re.match(r"^\s*(?:title|题目|标题|论文题目)\s*[:：]\s*(.+)$", stripped, re.I)
+        if not manuscript_title and inline_title and is_title_candidate(inline_title.group(1)):
+            manuscript_title = clean_title_text(inline_title.group(1))
+            title_source = "title_label_inline"
+            continue
+        if not manuscript_title and is_label_only(stripped, {"title", "题目", "标题", "论文题目"}):
+            for next_text in first_texts[index + 1:index + 6]:
+                if is_title_candidate(next_text):
+                    manuscript_title = clean_title_text(next_text)
+                    title_source = "title_label_next_paragraph"
+                    break
+        inline_running = re.match(r"^\s*running\s*title\s*[:：]\s*(.+)$", stripped, re.I)
+        if not running_title and inline_running and clean_title_text(inline_running.group(1)):
+            running_title = clean_title_text(inline_running.group(1))
+            continue
+        if not running_title and is_label_only(stripped, {"runningtitle"}):
+            for next_text in first_texts[index + 1:index + 4]:
+                candidate = clean_title_text(next_text)
+                if candidate and len(candidate) <= 160 and not re.match(r"^(abstract|keywords?)\b", candidate, re.I):
+                    running_title = candidate
+                    break
+
+    if not manuscript_title:
+        for text in first_texts:
+            if re.match(r"^\s*(?:abstract|keywords?|1\.?\s*introduction|introduction)\b", text, re.I):
+                break
+            if is_title_candidate(text):
+                manuscript_title = clean_title_text(text)
+                title_source = "first_plausible_front_matter_paragraph"
+                break
+
+    return {
+        "manuscript_title": manuscript_title,
+        "running_title": running_title,
+        "title_source": title_source,
+        "core_properties": {k: v for k, v in core_properties.items() if v},
+    }
 
 
 def normalize_zip_target(target):
@@ -323,12 +415,15 @@ def analyze_docx(path, extract_dir=None):
         media_name_set = set(media_names)
         chart_names = [name for name in names if name.startswith("word/charts/") and name.endswith(".xml")]
         diagram_names = [name for name in names if name.startswith("word/diagrams/") and name.endswith(".xml")]
+        core_properties = extract_core_properties(docx)
         result["counts"]["images"] = len(media_names)
         result["counts"]["charts"] = len(chart_names)
         result["counts"]["diagrams"] = len(diagram_names)
 
         root = xml_root(docx, "word/document.xml")
         if root is not None:
+            title_metadata = extract_title_metadata(paragraph_records(root), core_properties)
+            result.update(title_metadata)
             result["counts"]["tables"] = len(root.findall(".//w:tbl", NS))
             result["counts"]["drawings"] = len(root.findall(".//w:drawing", NS))
             result["counts"]["inline_drawings"] = len(root.findall(".//wp:inline", NS))

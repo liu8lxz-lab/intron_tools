@@ -6,7 +6,7 @@
     <title>管理后台 · 投稿前预审质控系统</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="admin-page">
     <div class="page">
       <header class="topbar">
         <div class="brand">
@@ -42,6 +42,28 @@
         </section>
 
         <section id="adminView" class="admin-layout hidden">
+          <div class="page-intro admin-intro">
+            <div>
+              <p class="eyebrow">Operations Console</p>
+              <h1>预审质控管理后台</h1>
+              <p>集中管理模型配置、提示词版本、人工代跑任务和报告交付状态。</p>
+            </div>
+            <div class="intro-metrics" aria-label="后台能力概览">
+              <div>
+                <strong>V4</strong>
+                <span>当前链路</span>
+              </div>
+              <div>
+                <strong>5+3</strong>
+                <span>调用点</span>
+              </div>
+              <div>
+                <strong>DOCX/PDF</strong>
+                <span>交付物</span>
+              </div>
+            </div>
+          </div>
+
           <aside class="sidebar">
             <button class="tab-button active" data-tab="api" type="button">API 配置</button>
             <button class="tab-button" data-tab="prompts" type="button">提示词配置</button>
@@ -162,7 +184,7 @@
             <section id="tab-prompts" class="panel tab-panel hidden">
               <div class="panel-header">
                 <h2>提示词配置</h2>
-                <p>当前只维护你的自然语言提示词原文：全局系统提示词、6 个 Agent、通用一致性比较器、裁决者裁定与终稿输出。程序会在运行时自动追加 JSON 与报告生成适配层；适配层不写入这里的文本框。V1 历史提示词已隐藏但数据保留。</p>
+                <p>当前只维护 V4 自然语言提示词原文：5 个审稿 Agent、清洁员 Agent、裁决者参数 Agent。新流程不追加 JSON 适配层，不运行终稿 Agent；PDF/Word 严格映射问题清单.txt与裁决者参数.txt。V1/V2/V3 历史提示词已隐藏但数据保留。</p>
               </div>
               <div class="panel-body">
                 <div class="split">
@@ -284,7 +306,7 @@
 
                     <h3>skills 完整输出</h3>
                     <div class="form-row">
-                      <textarea id="manualSkillOutput" class="code-area" placeholder="粘贴 sci-pre-review-runner v2.1 的完整输出，需包含 artifact_manifest JSON、agent_runs、agent_consistency_reports、agent_merged_issue_lists、adjudicator_review JSON 和 final_adjudication JSON（终稿输出）。旧版整包仍兼容。"></textarea>
+                      <textarea id="manualSkillOutput" class="code-area" placeholder="粘贴 sci-pre-review-runner V4 的完整输出，需包含 agent1.txt 至 agent5.txt、问题清单.txt、裁决者参数.txt。可选包含 runner_metadata JSON 和 artifact_manifest JSON；旧版整包仍兼容。"></textarea>
                     </div>
                     <div class="actions">
                       <button id="saveManualSkillOutput" type="button">导入输出并生成报告</button>

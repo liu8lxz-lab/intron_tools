@@ -1,269 +1,125 @@
 ---
 name: sci-pre-review-runner
-description: Run the V2.1 clinical SCI manuscript pre-submission review workflow from the intron_tools project. Use when Codex is given a Word manuscript (.doc or .docx) and customer information and must produce backend-pasteable manual-run outputs for Python artifact detection, six double-run Agents, consistency comparison, merged issue lists, adjudicator_review JSON, and final_adjudication JSON final-output package.
+description: Run the intron_tools V4 clinical SCI manuscript pre-submission review workflow. Use when Codex is given a Word manuscript and customer information and must produce backend-pasteable V4 TXT-only manual-run outputs for five Agents, the cleaner, and the adjudicator.
 ---
 
 # SCI Pre-Review Runner
 
-## Overview
+Use this skill to replace the model-calling part of the local pre-submission QC app when the user provides a Word manuscript and customer information.
 
-Use this skill to replace the model-calling part of the local pre-submission QC app when the user provides a Word manuscript and customer information. Produce one complete V2.1 output package that can be pasted into the admin manual-run workbench.
-
-This skill does not call the web app API, does not read API configs, and does not generate DOCX/PDF reports. The app remains responsible for report generation after the V2.1 package is pasted back into the admin UI.
+The app remains responsible for parsing, task management, DOCX/PDF rendering, and downloads. The runner should produce one complete V4 TXT-only package for the admin manual-run workbench.
 
 ## Workflow
 
 1. Collect:
-   - Manuscript path (`.doc` or `.docx` only).
-   - Customer information text: institution, department, research area, target journal, article type, special concerns, and similar context.
-2. Run `scripts/build_review_context.mjs` to parse the Word file, run Python artifact detection, extract image occurrences from `.docx` files, and build the V2.1 review prompts:
-   ```bash
-   node /Users/a682/.codex/skills/sci-pre-review-runner/scripts/build_review_context.mjs \
-     --manuscript "/absolute/path/to/manuscript.docx" \
-     --customer-info "客户信息文本" \
-     --project-root "/Users/a682/Documents/New project 2" \
-     --prompts "/absolute/path/to/task_prompt_snapshot.json"
-   ```
-   The `--prompts` argument is optional for ad hoc runs, but required when the admin system provides a task-level prompt snapshot path.
-   By default, `.docx` image occurrences are extracted into `storage/extracted-images/manual-<task_id>/img_00x.<ext>` under the project root. Use `--image-extract-dir "/absolute/path"` only when a specific extraction directory is required.
-3. Execute the six Agents in the exact stage-key order from the generated context:
-   - `selection_innovation`
-   - `clinical_methods`
-   - `statistical_results`
-   - `numerical_audit`
-   - `figure_table_visual_audit`
-   - `submission_safety_expression`
-   For `selection_innovation`, first run targeted web searches for recent directly relevant evidence: guidelines, consensus statements, systematic reviews, meta-analyses, real-world studies, and same-topic clinical cohort studies from the past 3-5 years. Use search results only to support concrete Agent 1 issues, compress the finding into that issue's `evidence` field, and do not write a standalone literature review. If search is unavailable or inconclusive, do not claim the topic is outdated, saturated, or guideline-inconsistent; state that the manuscript does not provide enough recent evidence.
-   For `statistical_results`, web search is optional and should be limited to method/reporting standards when the manuscript itself cannot resolve a diagnostic-performance, prediction-model, cutoff, or statistical-reporting question. Do not write a standalone methods review.
-   Before running `numerical_audit` and `figure_table_visual_audit`, inspect every reviewable `image_sequence[].extracted_path` listed in the generated context with the available image-viewing capability. Cite stable image IDs in evidence, for example `img_001 / inferred_label: Figure 1 / label_confidence: high`.
-   For `numerical_audit`, only judge figure-internal numbers when you actually read the figure image or readable figure text. If only `artifact_manifest`, figure references, or legends are available, report the audit limitation and do not claim figure-internal numbers are consistent.
-   For `figure_table_visual_audit`, explicitly record whether each relevant Figure image body was actually reviewable. If an extracted image cannot be opened, is a non-reviewable format, or is only indirectly represented by caption/reference text, mark the observation as `review_status: not_reviewable` in the evidence wording and do not judge clarity, resolution, font, color, layout, AI-image traces, axes, or other image-body quality.
-   For `submission_safety_expression`, web search is optional and limited to authorization/registration/copyright/reference-authenticity/target-journal format checks. Use findings only as issue evidence; do not write a standalone background or policy review.
-4. For each Agent, perform two independent runs:
-   - Use the same Agent system prompt, user prompt, manuscript material, customer information, and `artifact_manifest`.
-   - Do not reference the first run while producing the second run.
-   - Do not pass one Agent's output into another Agent.
-   - Each run should return the Agent JSON requested by its prompt, especially the `issues` array.
-   - Each issue should include `issue_narrative`: a complete natural-language review paragraph with issue number/title, severity, evidence, submission risk, and low-cost revision path. P0/P1 narratives should be detailed enough to resemble a human reviewer comment rather than a short label.
-5. For each Agent, compare the two runs:
-   - Use the `consistency_comparator` prompt from the generated context.
-   - Report overall issue overlap and P0/P1 overlap.
-   - Keep every P0/P1 issue found by either run unless there is a clear evidence-based reason to exclude it, and mark uncertain items as needing human review.
-   - Merge duplicate or near-duplicate issues into that Agent's final issue list.
-6. Execute adjudicator review only after all six merged Agent issue lists are complete:
-   - Use the `adjudicator_review` system prompt.
-   - Include the manuscript material, `artifact_manifest`, six consistency reports, and six merged issue lists.
-   - Run it once only; do not double-run it and do not pass it through the consistency comparator.
-   - Return strict compact JSON only, without Markdown fences or extra prose. Do not output `report_text`, `report_sections`, or a customer-facing report draft in this stage.
-   - Output `final_issue_decisions` instead of rewriting every long issue. The local backend materializes `adjudicator_review.final_issue_list` from `final_issue_decisions + agent_merged_issue_lists`, preserving `issue_narrative`, `submission_risk`, `evidence_quotes`, and `revision_path` from the Agent outputs.
-   - Output `source_issue_coverage` with one record for every issue in the six merged Agent lists. Each record must include source stage, source issue id/title, source severity, action (`kept_as`, `merged_into`, or `excluded`), target issue id, and reason. Do not silently drop any source issue.
-   - Only merge issues when they share the same precise location, same submission risk, and same low-cost revision action. If the root cause is similar but the customer must perform different edits, keep separate actionable issues. P0/P1 exclusions require a concrete evidence-based reason.
-   - If the six merged Agent lists contain at least 10 candidate issues, `final_issue_decisions` must keep at least 65% of them. If the result falls below 65%, restore over-merged issues or re-adjudicate item by item; do not merely add explanations to a compressed list.
-   - Do not output final scores in adjudicator review; final scoring belongs to `final_adjudication`.
-7. Execute final output only after `adjudicator_review JSON` is complete:
-   - Use the `final_adjudication` system prompt. Its business meaning is now "终稿输出".
-   - Use `adjudicator_review JSON` as the primary source for report-level fields and issue IDs.
-   - Do not re-review the manuscript or change adjudicator conclusions. Output only customer-facing report-level data: summary, conclusion, priority issue IDs, strengths, weaknesses, six-dimensional diagnosis, checklist, and no internal double-run, comparator, prompt, token, or extraction-process wording in customer fields.
-   - `report_content.final_issue_list` may be empty or contain only issue references. The local backend will fill it from the adjudicator issue pool and generate expanded customer-facing issue text.
-   - Do not merge, delete, reorder, split, downgrade, or reword away any adjudicated issue in the final output step.
-   - Produce `report_content.score_summary` from the final issue pool using model fuzzy judgment. Do not use backend-style mechanical deduction language. If the adjudicator did not provide scores, the final stage must still score from the final issue pool; never output placeholders such as `未稳定提供`, `仅能依据问题分布判断`, `无法评分`, or all-zero schema examples.
-   - Return strict JSON only, without Markdown fences or extra prose.
-8. Validate the final JSON with:
-   ```bash
-   node /Users/a682/.codex/skills/sci-pre-review-runner/scripts/validate_final_json.mjs --input "/path/to/final.json"
-   ```
-   If validation reports missing, placeholder, or all-zero `score_summary`, repair only `report_content.score_summary` in the same `final_adjudication` conversation. Do not re-review the manuscript and do not change the final issue pool, priority issue IDs, or other adjudicated conclusions.
+   - Word manuscript path (`.doc` or `.docx`).
+   - Customer information.
+   - Prompt snapshot path if the app provides one.
 
-## Output Format
+2. Build the review context:
 
-Return a backend-pasteable V2.1 package in this exact order:
+```bash
+node /Users/a682/.codex/skills/sci-pre-review-runner/scripts/build_review_context.mjs \
+  --manuscript "/absolute/path/to/manuscript.docx" \
+  --customer-info "客户信息文本" \
+  --project-root "/Users/a682/Documents/New project 2" \
+  --prompts "/absolute/path/to/task_prompt_snapshot.json"
+```
+
+3. Run the five review Agents once each:
+   - `topic_innovation_rationale`
+   - `statistical_details`
+   - `fulltext_consistency_numerical_audit`
+   - `figure_table_quality`
+   - `misc_compliance_expression`
+
+   Each Agent uses the original Word manuscript and its published prompt. Save exact TXT outputs as `agent1.txt` through `agent5.txt`. Do not double-run Agents, do not run a consistency comparator, and do not request JSON sidecars.
+
+4. Image handling:
+   - Before Agent 3 and Agent 4, inspect reviewable images listed in the generated context when image paths are available.
+   - Only judge figure-internal details when the actual figure body is reviewable.
+   - If image extraction or viewing is limited, state the limitation in the TXT output.
+
+5. Run the cleaner:
+   - Input only the five Agent TXT files.
+   - Do not provide original Word, parsed manuscript text, artifact manifest, or image checklist.
+   - Save exact output as `问题清单.txt`.
+   - The cleaner must not re-review the manuscript or invent issues absent from the five Agent reports.
+
+6. Run the adjudicator:
+   - Input original Word + `问题清单.txt`.
+   - Save exact output as `裁决者参数.txt`.
+   - The adjudicator only outputs parameters: summary, overall conclusion, score, six dimension scores, risk level, revision workload, submission recommendation, priority issue IDs, publication positioning, and checklist.
+   - It must not rewrite long issue bodies or compress the issue list.
+
+7. Stop after `裁决者参数.txt`. V4 has no final-report Agent.
+
+## Output Package
+
+Return a backend-pasteable V4 package in this exact shape:
 
 ```text
 runner_metadata JSON:
 {
   "runner": "codex-skill",
   "target_model": "manual",
-  "authorization_mode": "local-manual-run",
-  "fidelity_contract_version": "source-coverage.v1",
-  "fidelity_validation_mode": "strict",
+  "workflow_version": "v4-txt-source-only",
   "notes": []
 }
 
 artifact_manifest JSON:
 {
-  "...": "Python 文件状态检测结果",
-  "image_sequence": [
-    {
-      "image_id": "img_001",
-      "extracted_path": "/absolute/path/to/img_001.png",
-      "inferred_label": "Figure 1",
-      "label_confidence": "high",
-      "review_status": "pending_manual_review"
-    }
-  ]
+  "...": "optional Python artifact detection result"
 }
 
-agent_runs:
-{
-  "selection_innovation": {
-    "run_1": { "issues": [] },
-    "run_2": { "issues": [] }
-  },
-  "clinical_methods": {
-    "run_1": { "issues": [] },
-    "run_2": { "issues": [] }
-  },
-  "statistical_results": {
-    "run_1": { "issues": [] },
-    "run_2": { "issues": [] }
-  },
-  "numerical_audit": {
-    "run_1": { "issues": [] },
-    "run_2": { "issues": [] }
-  },
-  "figure_table_visual_audit": {
-    "run_1": { "issues": [] },
-    "run_2": { "issues": [] }
-  },
-  "submission_safety_expression": {
-    "run_1": { "issues": [] },
-    "run_2": { "issues": [] }
-  }
-}
+agent1.txt:
+<Agent 1 full TXT>
 
-agent_consistency_reports:
-{
-  "selection_innovation": {
-    "run1IssueCount": 0,
-    "run2IssueCount": 0,
-    "mergedIssueCount": 0,
-    "overlapIssueCount": 0,
-    "overallOverlapRate": 0.0,
-    "run1P0P1Count": 0,
-    "run2P0P1Count": 0,
-    "mergedP0P1Count": 0,
-    "overlapP0P1Count": 0,
-    "p0p1OverlapRate": 0.0,
-    "onlyInRun1": [],
-    "onlyInRun2": [],
-    "overlapIssues": [],
-    "severityChanged": [],
-    "notes": "No standalone stability rating; rates use 0-1 decimals."
-  }
-}
+agent2.txt:
+<Agent 2 full TXT>
 
-agent_merged_issue_lists:
-{
-  "selection_innovation": [
-    {
-      "severity": "P1",
-      "category": "selection_innovation",
-      "issue": "A1-M01｜问题短标题",
-      "evidence": "证据",
-      "location": "位置",
-      "recommendation": "建议",
-      "issue_narrative": "问题编号、短标题、风险等级、依据、问题及投稿风险、低成本处理方向组成的完整审稿正文",
-      "risk_analysis": "可选：风险机制说明",
-      "evidence_quotes": ["可选：原文片段"],
-      "revision_path": ["可选：修订步骤"],
-      "confidence": 0.8,
-      "source_runs": ["run_1", "run_2"],
-      "source_issue_ids": ["run_1:A1-01", "run_2:A1-03"]
-    }
-  ]
-}
+agent3.txt:
+<Agent 3 full TXT>
 
-adjudicator_review JSON:
-{
-  "adjudication_summary": "...",
-  "overall_judgment": {
-    "submission_recommendation": "...",
-    "risk_level": "...",
-    "revision_workload": "..."
-  },
-  "final_issue_decisions": [
-    {
-      "id": "JR-001",
-      "action": "keep",
-      "severity": "P1",
-      "category": "clinical_methods",
-      "primary_dimension": "研究设计与临床逻辑",
-      "issue": "最终问题短标题",
-      "source_issue_ids": ["clinical_methods:A2-M01"],
-      "reason": "保留、合并、升级或降级的裁定理由"
-    }
-  ],
-  "priority_issue_ids": ["JR-001"],
-  "source_issue_coverage": [
-    {
-      "source_stage": "clinical_methods",
-      "source_issue_id": "A2-M01",
-      "source_issue_title": "来源问题标题",
-      "source_severity": "P1",
-      "action": "kept_as",
-      "target_issue_id": "JR-001",
-      "reason": "保留、合并或排除的具体理由"
-    }
-  ],
-  "adjudication_decisions": [],
-  "excluded_issues": [],
-  "severity_counts": { "P0": 0, "P1": 0, "P2": 0, "P3": 0, "total": 0 },
-  "issue_distribution": {},
-  "consistency_metrics": {},
-  "artifact_quality_summary": {},
-  "manuscript_strengths": [],
-  "major_weaknesses": [],
-  "dimension_diagnosis": {}
-}
+agent4.txt:
+<Agent 4 full TXT>
 
-final_adjudication JSON:
-{
-  "summary": "...",
-  "overall_conclusion": "...",
-  "must_fix": [],
-  "suggested_fix": [],
-  "text_and_figure_comments": [],
-  "compliance_risk": [],
-  "pre_submission_checklist": [],
-  "final_review_text": "...",
-  "report_content": {
-    "score_summary": {
-      "overall_score": 0,
-      "overall_score_10": 0,
-      "overall_score_text": "X.X / 10",
-      "overall_score_label": "暂不建议投稿|大修后可投稿|勉强达到可投稿水平|投稿准备较成熟",
-      "overall_score_rationale": "客户可读的综合评分理由，不写机械扣分规则",
-      "dimension_scores": [
-        { "key": "selection_innovation", "title": "选题创新性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "clinical_methods", "title": "研究设计与临床逻辑", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "statistical_results", "title": "统计分析与证据支撑", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "numerical_audit", "title": "数据一致性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "figure_table_visual_audit", "title": "图表质量与呈现完整性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" },
-        { "key": "submission_safety_expression", "title": "投稿合规与成稿完整性", "score": 0, "score_10": 0, "score_text": "X.X / 10", "rationale": "一句话评分理由" }
-      ]
-    },
-    "priority_issue_ids": [],
-    "final_issue_list": [],
-    "report_sections": {}
-  }
-}
+agent5.txt:
+<Agent 5 full TXT>
+
+问题清单.txt:
+<Cleaner full TXT>
+
+裁决者参数.txt:
+<Adjudicator full TXT>
 ```
 
-The `summary` field must be no longer than 200 Chinese characters. Array fields must be JSON arrays. Array items may be strings or objects.
-The optional `report_content` object should carry adjudicator-derived structured data for PDF/report visualization where available. When `adjudicator_review JSON` or a complete issue pool is available, it must include `score_summary`; the app reads these scores directly for Word/PDF and does not compute customer-facing scores by mechanical deduction. If upstream scoring is in `X.X / 10`, preserve that text and provide the percentage equivalent for charts. If upstream scoring is absent, the final stage must still provide model fuzzy scoring from the final issue pool; missing scores, placeholder wording, and all-zero examples must be repaired before backend import.
+## Required TXT Content
 
-For debugging quality, do not omit `issue_narrative` from Agent or comparator issue objects. The compact adjudicator may omit long issue bodies because the backend materializes them from the Agent merged issue lists.
+`问题清单.txt` should contain each issue's:
 
-## Prompt Snapshot
+- 问题编号
+- 问题名称
+- P 分级
+- 归属模块
+- 精确定位
+- 介绍/问题描述
+- 投稿风险
+- 处理建议
 
-Load `references/prompts.json` only when prompt details are needed. It contains the current effective prompt snapshot from the app database and no API keys, uploaded files, tasks, reports, or encrypted configuration. The `content` field is the backend prompt text plus the runtime adapter layer; `rawContentHash`, `adapterVersion`, and `effectiveContentHash` are included for debugging.
+`裁决者参数.txt` should contain:
 
-When the app's backend prompts change, refresh the snapshot:
+- 完整英文题目 and 完整中文题目 when available
+- 风险度评估 / 风险等级
+- 200字摘要
+- 优先处理问题 ID
+- 修改方向 / 投稿建议
+- 总体评分
+- 六维评分 and short rationale
+- 总体判断
+- 重点风险
+- 建议处理动作
+- 预期SCI发表 / 修后投稿定位
+- 投稿前检查清单（仅当裁决者提示词或网页输出自然包含时；若缺失，后台报告不显示该章节）
 
-```bash
-node /Users/a682/.codex/skills/sci-pre-review-runner/scripts/export_prompts_from_project.mjs \
-  --project-root "/Users/a682/Documents/New project 2"
-```
-
-The refresh script requires exactly one published version for all ten prompt points:
-`global_system`, six V2.1 review Agents, `consistency_comparator`, `adjudicator_review`, and `final_adjudication` (终稿输出).
+If critical fields are missing, the backend should reject import rather than inventing content. The pre-submission checklist is optional unless the active adjudicator prompt explicitly requires it.
